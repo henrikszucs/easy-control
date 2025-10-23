@@ -1,0 +1,36 @@
+{
+    "name": "easy-control",
+    "version": "0.1.0",
+    "description": "Simple and easy to use node.js module to handle mouse, keyboard and controller input for Windows, MacOS and Linux.",
+    "keywords": [
+        "GUI",
+        "control",
+        "mouse",
+        "keyboard",
+        "controller",
+        "emulator"
+    ],
+    "license": "GPL-2.0 license",
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/henrikszucs/easy-control"
+    },
+    "bugs": "https://github.com/henrikszucs/easy-control/issues",
+    "maintainers": [
+        {
+            "name": "Henrik Szucs",
+            "email": "henrikszucs6@gmail.com"
+        }
+    ],
+    "scripts": {
+        "build": "node index.js",
+        "uninstall": "node index.js -- --uninstall"
+    },
+    "type": "module",
+    "exports": {
+        ".": "./dist/easy-control.cjs"
+    },
+    "dependencies": {
+        "node-addon-api": "^8.5.0"
+    }
+}
