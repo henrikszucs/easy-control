@@ -32,6 +32,16 @@ npm run uninstall
 
 ```js
 import { Mouse, Keyboard,  Controller, Screen } from "./dist/easy-control.cjs";
+
+/*
+    !!! Function calculate with X and Y positions with scaled value !!!
+
+    Example: 1920 x 1080 with 1.25 (125% scale) >> right bottom corner >> 1536 x 864
+
+    If you want convert normal pixel to scaled just divide by scale e.g. 1920/1.25 = 1536
+    
+    If you want convert scaled pixel to normal just multiply is by scale e.g. 1536*1.25 = 1920
+*/
 ```
 
 ### Mouse
@@ -40,6 +50,15 @@ const x = Mouse.getX();
 const y = Mouse.getY();
 
 const icon = Mouse.getIcon();
+/*
+{
+    "width": 32,
+    "height": 32,
+    "data": [0,1,2...],
+    "xOffset": 0,
+    "yOffset": 0
+}
+*/
 
 Mouse.setX(x);
 Mouse.setY(y);
@@ -64,6 +83,8 @@ Keyboard.type(text="");
 ```js
 const isSupported = Controller.isSupport();
 
+const isSuccess = Controller.install();
+
 const contollers = Controller.list();
 
 const controller1 = Controller.create(name);
@@ -75,8 +96,6 @@ controller1.keyUp(key);
 
 controller1.setAxes(type, axes);
 
-controller1.vibrate(ms);
-
 controller1.disconnect();
 controller1.delete();
 ```
@@ -85,6 +104,26 @@ controller1.delete();
 ### Screen
 ```js
 const screens = Screen.list();
+/*
+[
+    {
+        "isPrimary": true,
+        "width": 1536,
+        "height": 864,
+        "xOffset": 0,
+        "yOffset": 0,
+        "scaleFactor": 1.25
+    },
+    {
+        "isPrimary": false,
+        "width": 1680,
+        "height": 900,
+        "xOffset": -1680,
+        "yOffset": 0,
+        "scaleFactor": 1
+    }
+]
+*/
 ```
 
 

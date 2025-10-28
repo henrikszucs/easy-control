@@ -23,7 +23,9 @@
         }
     ],
     "scripts": {
+        "install" : "echo",
         "build": "node index.js",
+        "test": "node dev/test.js",
         "uninstall": "node index.js -- --uninstall"
     },
     "type": "module",
