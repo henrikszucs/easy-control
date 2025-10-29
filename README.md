@@ -34,7 +34,7 @@ npm run uninstall
 import { Mouse, Keyboard,  Controller, Screen } from "./dist/easy-control.cjs";
 
 /*
-    !!! Function calculate with X and Y positions with scaled value !!!
+    !!! Function calculate and return with X and Y positions with scaled value !!!
 
     Example: 1920 x 1080 with 1.25 (125% scale) >> right bottom corner >> 1536 x 864
 
@@ -54,7 +54,7 @@ const icon = Mouse.getIcon();
 {
     "width": 32,
     "height": 32,
-    "data": [0,1,2...],
+    "data": [0,1,2...], //argb data
     "xOffset": 0,
     "yOffset": 0
 }
@@ -63,11 +63,11 @@ const icon = Mouse.getIcon();
 Mouse.setX(x);
 Mouse.setY(y);
 
-Mouse.buttonDown(btn);  // right | middle | left | button_1 | button_2 | button_3
-Mouse.buttonUp(btn);
+Mouse.buttonDown(btn);  // right | middle | left | back | forward
+Mouse.buttonUp(btn);    // right | middle | left | back | forward
 
-Mouse.scrollDown(length=1);
-Mouse.scrollUp(length=1);
+Mouse.scrollDown(amount=1, isHorizontal=false); // down or right scroll
+Mouse.scrollUp(amount=1, isHorizontal=false);   // up or left scroll
 ```
 
 ### Keyboard

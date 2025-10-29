@@ -46,12 +46,13 @@
 
 // Include modules
 #include "mouse.h"
-
+#include "keyboard.h"
 
 
 Napi::Object InitAll(Napi::Env env, Napi::Object exports) {
     Napi::Object obj = Napi::Object::New(env);
     obj.Set(Napi::String::New(env, "Mouse"), Mouse::Init(env, exports));
+    obj.Set(Napi::String::New(env, "Keyboard"), Keyboard::Init(env, exports));
 
     return obj;
 }
