@@ -12,5 +12,6 @@ console.log(Control.Screen.list());
 
 console.log(Control.Controller.list());
 console.log(Control.Controller.isSupported());
-console.log(Control.Controller.install());
-console.log(Control.Controller.create());
+const controller = Control.Controller.create();
+console.log(controller);
+console.log(controller.keyDown);

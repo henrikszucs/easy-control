@@ -3,23 +3,7 @@
 
 
 // Check platform
-#ifndef PyModule_AddIntMacro
-    #define PyModule_AddIntMacro(module, macro) PyModule_AddIntConstant(module, #macro, macro)
-#endif
-
-#if !defined(IS_WINDOWS) && (defined(WIN32) || defined(_WIN32) || defined(__WIN32__) || defined(__WINDOWS__))
-    #define IS_WINDOWS
-#endif
-
-#if !defined(IS_MACOSX) && defined(__APPLE__) && defined(__MACH__)
-    #define IS_MACOSX
-#endif
-
-#if !defined(USE_X11) && !defined(NUSE_X11) && !defined(IS_MACOSX) && !defined(IS_WINDOWS)
-    #define USE_X11
-#endif 
-    
-#if !defined(IS_WINDOWS) && !defined(IS_MACOSX) && !defined(USE_X11)
+#if !defined(IS_WINDOWS) && !defined(IS_MACOS) && !defined(IS_LINUX)
     #error "Unsupported platform"
 #endif
 

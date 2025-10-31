@@ -5,12 +5,12 @@
     #define WIN32_LEAN_AND_MEAN
     #include <windows.h>
     #include <cctype>  // for toupper
-#elif defined(IS_MACOSX)
+#elif defined(IS_MACOS)
     #include <ApplicationServices/ApplicationServices.h>
     #include <Carbon/Carbon.h>
     #include <CoreFoundation/CoreFoundation.h>
     #include <cctype>  // for tolower
-#elif defined(USE_X11)
+#elif defined(IS_LINUX)
     #include <X11/Xlib.h>
     #include <X11/keysym.h>
     #include <X11/extensions/XTest.h>
@@ -89,7 +89,7 @@ WORD keyToVirtualKeyCode(const std::string& key) {
     return vkCode;
 }
 
-#elif defined(IS_MACOSX)
+#elif defined(IS_MACOS)
 CGKeyCode keyToVirtualKeyCode(const std::string& key) {
     CGKeyCode keyCode = 0;
     
@@ -146,7 +146,7 @@ CGKeyCode keyToVirtualKeyCode(const std::string& key) {
     return keyCode;
 }
 
-#elif defined(USE_X11)
+#elif defined(IS_LINUX)
 KeySym keyToVirtualKeyCode(const std::string& key) {
     KeySym keySym = 0;
     
@@ -274,7 +274,7 @@ void Keyboard::keyDown(const Napi::CallbackInfo& info) {
             SendInput(1, &input, sizeof(INPUT));
         }
 
-    #elif defined(IS_MACOSX)
+    #elif defined(IS_MACOS)
         CGKeyCode keyCode = keyToVirtualKeyCode(key);
         
         if (keyCode != 0) {
@@ -283,7 +283,7 @@ void Keyboard::keyDown(const Napi::CallbackInfo& info) {
             CFRelease(keyDownEvent);
         }
 
-    #elif defined(USE_X11)
+    #elif defined(IS_LINUX)
         Display *display = XGetMainDisplay();
         if (display == NULL) {
             return;
@@ -330,7 +330,7 @@ void Keyboard::keyUp(const Napi::CallbackInfo& info) {
             SendInput(1, &input, sizeof(INPUT));
         }
 
-    #elif defined(IS_MACOSX)
+    #elif defined(IS_MACOS)
         CGKeyCode keyCode = keyToVirtualKeyCode(key);
         
         if (keyCode != 0) {
@@ -339,7 +339,7 @@ void Keyboard::keyUp(const Napi::CallbackInfo& info) {
             CFRelease(keyUpEvent);
         }
 
-    #elif defined(USE_X11)
+    #elif defined(IS_LINUX)
         Display *display = XGetMainDisplay();
         if (display == NULL) {
             return;
@@ -393,7 +393,7 @@ void Keyboard::type(const Napi::CallbackInfo& info) {
             SendInput(2, inputs, sizeof(INPUT));
         }
 
-    #elif defined(IS_MACOSX)
+    #elif defined(IS_MACOS)
         // Convert std::string to UTF-16 for macOS
         CFStringRef stringRef = CFStringCreateWithCString(NULL, text.c_str(), kCFStringEncodingUTF8);
         CFIndex length = CFStringGetLength(stringRef);
@@ -420,7 +420,7 @@ void Keyboard::type(const Napi::CallbackInfo& info) {
         
         CFRelease(stringRef);
 
-    #elif defined(USE_X11)
+    #elif defined(IS_LINUX)
         Display *display = XGetMainDisplay();
         if (display == NULL) {
             return;

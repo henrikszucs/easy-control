@@ -59,7 +59,22 @@ const build = async () => {
     
     if (os.platform() === "win32") {
         await fs.copyFile("./build/Release/easy-control.node", "./dist/" + os.platform() + "-" + os.arch() + "/easy-control.node");
-        await fs.cp("./src/vjoy_driver/", "./dist/" + os.platform() + "-" + os.arch() + "/vjoy_driver/", { "recursive": true });
+        const deps = [
+            "./src/vjoy_driver/hidkmdf.sys", "./dist/" + os.platform() + "-" + os.arch() + "/vjoy_driver/hidkmdf.sys",
+            "./src/vjoy_driver/unins000.dat", "./dist/" + os.platform() + "-" + os.arch() + "/vjoy_driver/unins000.dat",
+            "./src/vjoy_driver/unins000.exe", "./dist/" + os.platform() + "-" + os.arch() + "/vjoy_driver/unins000.exe",
+            "./src/vjoy_driver/vjoy.cat", "./dist/" + os.platform() + "-" + os.arch() + "/vjoy_driver/vjoy.cat",
+            "./src/vjoy_driver/vjoy.inf", "./dist/" + os.platform() + "-" + os.arch() + "/vjoy_driver/vjoy.inf",
+            "./src/vjoy_driver/vJoy.sys", "./dist/" + os.platform() + "-" + os.arch() + "/vjoy_driver/vJoy.sys",
+            "./src/vjoy_driver/vJoyInstall.exe", "./dist/" + os.platform() + "-" + os.arch() + "/vjoy_driver/vJoyInstall.exe",
+
+            "./src/vjoy_driver/lib/x64/vJoyInstall.dll", "./dist/" + os.platform() + "-" + os.arch() + "/vJoyInstall.dll",
+            "./src/vjoy_driver/lib/x64/vJoyInterface.dll", "./dist/" + os.platform() + "-" + os.arch() + "/vJoyInterface.dll",
+            "./src/vjoy_driver/lib/x64/vJoyInterface.lib", "./dist/" + os.platform() + "-" + os.arch() + "/vJoyInterface.lib"
+        ];
+        for (let i = 0; i < deps.length; i += 2) {
+            await fs.cp(deps[i], deps[i + 1]), { "recursive": true };
+        }
     } else if (os.platform() === "darwin") {
         await fs.copyFile("./build/Release/easy-control.node", "./dist/" + os.platform() + "-" + os.arch() + "/easy-control.node");
     } else if (os.platform() === "linux") {

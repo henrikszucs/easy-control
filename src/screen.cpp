@@ -6,10 +6,10 @@
     #include <windows.h>
     #include <shellscalingapi.h>
     #include <vector>
-#elif defined(IS_MACOSX)
+#elif defined(IS_MACOS)
     #include <ApplicationServices/ApplicationServices.h>
     #include <CoreGraphics/CoreGraphics.h>
-#elif defined(USE_X11)
+#elif defined(IS_LINUX)
     #include <X11/Xlib.h>
     #include <X11/extensions/Xrandr.h>
     #include "xdisplay.h"
@@ -96,7 +96,7 @@ Napi::Array Screen::list(const Napi::CallbackInfo& info) {
             result.Set(i, screenObj);
         }
 
-    #elif defined(IS_MACOSX)
+    #elif defined(IS_MACOS)
         uint32_t displayCount = 0;
         CGDirectDisplayID displays[32]; // Support up to 32 displays
         
@@ -153,7 +153,7 @@ Napi::Array Screen::list(const Napi::CallbackInfo& info) {
             }
         }
 
-    #elif defined(USE_X11)
+    #elif defined(IS_LINUX)
         Display *display = XGetMainDisplay();
         if (display == NULL) {
             return result;

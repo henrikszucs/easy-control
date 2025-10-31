@@ -2,9 +2,9 @@
 
 #if defined(IS_WINDOWS)
     #include <windows.h>
-#elif defined(IS_MACOSX)
+#elif defined(IS_MACOS)
     #include <ApplicationServices/ApplicationServices.h>
-#elif defined(USE_X11)
+#elif defined(IS_LINUX)
     #include <X11/Xlib.h>
     #include <X11/extensions/XTest.h>
     #include <stdlib.h>
@@ -20,13 +20,13 @@ Napi::Number Mouse::getX(const Napi::CallbackInfo& info) {
         GetCursorPos(&point);
         return Napi::Number::New(env, point.x);
 
-    #elif defined(IS_MACOSX)
+    #elif defined(IS_MACOS)
         CGEventRef event = CGEventCreate(NULL);
         CGPoint cursor = CGEventGetLocation(event);
         CFRelease(event);
         return Napi::Number::New(env, cursor.x);
 
-    #elif defined(USE_X11)
+    #elif defined(IS_LINUX)
         Display *display = XGetMainDisplay();
         if (display == NULL) {
             return Napi::Number::New(env, 0);
@@ -55,13 +55,13 @@ Napi::Number Mouse::getY(const Napi::CallbackInfo& info) {
         GetCursorPos(&point);
         return Napi::Number::New(env, point.y);
 
-    #elif defined(IS_MACOSX)
+    #elif defined(IS_MACOS)
         CGEventRef event = CGEventCreate(NULL);
         CGPoint cursor = CGEventGetLocation(event);
         CFRelease(event);
         return Napi::Number::New(env, cursor.y);
 
-    #elif defined(USE_X11)
+    #elif defined(IS_LINUX)
         Display *display = XGetMainDisplay();
         if (display == NULL) {
             return Napi::Number::New(env, 0);
@@ -157,7 +157,7 @@ Napi::Object Mouse::getIcon(const Napi::CallbackInfo& info) {
         
         return result;
 
-    #elif defined(IS_MACOSX)
+    #elif defined(IS_MACOS)
         // Get the current cursor
         NSCursor *cursor = [NSCursor currentSystemCursor];
         if (cursor == nil) {
@@ -232,7 +232,7 @@ Napi::Object Mouse::getIcon(const Napi::CallbackInfo& info) {
         
         return result;
 
-    #elif defined(USE_X11)
+    #elif defined(IS_LINUX)
         Display *display = XGetMainDisplay();
         if (display == NULL) {
             result.Set("width", 0);
@@ -303,7 +303,7 @@ void Mouse::setX(const Napi::CallbackInfo& info) {
         GetCursorPos(&point);
         SetCursorPos(x, point.y);
 
-    #elif defined(IS_MACOSX)
+    #elif defined(IS_MACOS)
         CGEventRef event = CGEventCreate(NULL);
         CGPoint cursor = CGEventGetLocation(event);
         CFRelease(event);
@@ -314,7 +314,7 @@ void Mouse::setX(const Napi::CallbackInfo& info) {
         
         CGWarpMouseCursorPosition(newPosition);
 
-    #elif defined(USE_X11)
+    #elif defined(IS_LINUX)
         Display *display = XGetMainDisplay();
         if (display == NULL) {
             return;
@@ -360,7 +360,7 @@ void Mouse::setY(const Napi::CallbackInfo& info) {
         GetCursorPos(&point);
         SetCursorPos(point.x, y);
 
-    #elif defined(IS_MACOSX)
+    #elif defined(IS_MACOS)
         CGEventRef event = CGEventCreate(NULL);
         CGPoint cursor = CGEventGetLocation(event);
         CFRelease(event);
@@ -371,7 +371,7 @@ void Mouse::setY(const Napi::CallbackInfo& info) {
         
         CGWarpMouseCursorPosition(newPosition);
 
-    #elif defined(USE_X11)
+    #elif defined(IS_LINUX)
         Display *display = XGetMainDisplay();
         if (display == NULL) {
             return;
@@ -442,7 +442,7 @@ void Mouse::buttonDown(const Napi::CallbackInfo& info) {
         
         SendInput(1, &input, sizeof(INPUT));
 
-    #elif defined(IS_MACOSX)
+    #elif defined(IS_MACOS)
         CGEventRef event = CGEventCreate(NULL);
         CGPoint cursor = CGEventGetLocation(event);
         CFRelease(event);
@@ -471,7 +471,7 @@ void Mouse::buttonDown(const Napi::CallbackInfo& info) {
         CGEventPost(kCGHIDEventTap, mouseEvent);
         CFRelease(mouseEvent);
 
-    #elif defined(USE_X11)
+    #elif defined(IS_LINUX)
         Display *display = XGetMainDisplay();
         if (display == NULL) {
             return;
@@ -545,7 +545,7 @@ void Mouse::buttonUp(const Napi::CallbackInfo& info) {
         
         SendInput(1, &input, sizeof(INPUT));
 
-    #elif defined(IS_MACOSX)
+    #elif defined(IS_MACOS)
         CGEventRef event = CGEventCreate(NULL);
         CGPoint cursor = CGEventGetLocation(event);
         CFRelease(event);
@@ -574,7 +574,7 @@ void Mouse::buttonUp(const Napi::CallbackInfo& info) {
         CGEventPost(kCGHIDEventTap, mouseEvent);
         CFRelease(mouseEvent);
 
-    #elif defined(USE_X11)
+    #elif defined(IS_LINUX)
         Display *display = XGetMainDisplay();
         if (display == NULL) {
             return;
@@ -640,7 +640,7 @@ void Mouse::scrollDown(const Napi::CallbackInfo& info) {
         
         SendInput(1, &input, sizeof(INPUT));
 
-    #elif defined(IS_MACOSX)
+    #elif defined(IS_MACOS)
         CGEventRef event = CGEventCreate(NULL);
         CGPoint cursor = CGEventGetLocation(event);
         CFRelease(event);
@@ -658,7 +658,7 @@ void Mouse::scrollDown(const Napi::CallbackInfo& info) {
         CGEventPost(kCGHIDEventTap, scrollEvent);
         CFRelease(scrollEvent);
 
-    #elif defined(USE_X11)
+    #elif defined(IS_LINUX)
         Display *display = XGetMainDisplay();
         if (display == NULL) {
             return;
@@ -724,7 +724,7 @@ void Mouse::scrollUp(const Napi::CallbackInfo& info) {
         
         SendInput(1, &input, sizeof(INPUT));
 
-    #elif defined(IS_MACOSX)
+    #elif defined(IS_MACOS)
         CGEventRef event = CGEventCreate(NULL);
         CGPoint cursor = CGEventGetLocation(event);
         CFRelease(event);
@@ -742,7 +742,7 @@ void Mouse::scrollUp(const Napi::CallbackInfo& info) {
         CGEventPost(kCGHIDEventTap, scrollEvent);
         CFRelease(scrollEvent);
 
-    #elif defined(USE_X11)
+    #elif defined(IS_LINUX)
         Display *display = XGetMainDisplay();
         if (display == NULL) {
             return;

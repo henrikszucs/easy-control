@@ -21,8 +21,21 @@
         ],
         "conditions": [
             [
+                "OS=='win'",
+                {
+                    "defines": ["IS_WINDOWS"],
+                    "include_dirs": [
+                        "<(module_root_dir)/src/vjoy_driver/inc"
+                    ],
+                    "libraries": [
+                        "<(module_root_dir)/src/vjoy_driver/lib/x64/vJoyInterface.lib"
+                    ]
+                }
+            ],
+            [
                 "OS == 'mac'",
                 {
+                    "defines": ["IS_MACOS"],
                     "include_dirs": [
                         "System/Library/Frameworks/CoreFoundation.Framework/Headers",
                         "System/Library/Frameworks/Carbon.Framework/Headers",
@@ -42,6 +55,7 @@
             [
                 "OS == 'linux'",
                 {
+                    "defines": ["IS_LINUX"],
                     "link_settings": {
                         "libraries": [
                             "-lpng",
@@ -49,16 +63,7 @@
                             "-lX11",
                             "-lXtst"
                         ]
-                    },
-                    "sources": [
-                        "src/xdisplay.c"
-                    ]
-                }
-            ],
-            [
-                "OS=='win'",
-                {
-                    "defines": ["IS_WINDOWS"]
+                    }
                 }
             ]
         ]
