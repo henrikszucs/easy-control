@@ -8,7 +8,9 @@
         "sources": [
             "src/main.cpp",
             "src/mouse.cpp",
-            "src/keyboard.cpp"
+            "src/keyboard.cpp",
+            "src/controller.cpp",
+            "src/screen.cpp",
         ],
         "cflags": [
             "-Wall",

@@ -1,8 +1,6 @@
 #include "mouse.h"
 
 #if defined(IS_WINDOWS)
-    #define STRICT /* Require use of exact types. */
-    #define WIN32_LEAN_AND_MEAN 1 /* Speed up compilation. */
     #include <windows.h>
 #elif defined(IS_MACOSX)
     #include <ApplicationServices/ApplicationServices.h>
@@ -14,7 +12,7 @@
 #endif
 
 
-Napi::Number getX(const Napi::CallbackInfo& info) {
+Napi::Number Mouse::getX(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
 
     #if defined(IS_WINDOWS)
@@ -49,7 +47,7 @@ Napi::Number getX(const Napi::CallbackInfo& info) {
     #endif
 }
 
-Napi::Number getY(const Napi::CallbackInfo& info) {
+Napi::Number Mouse::getY(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
 
     #if defined(IS_WINDOWS)
@@ -85,7 +83,7 @@ Napi::Number getY(const Napi::CallbackInfo& info) {
 }
 
 
-Napi::Object getIcon(const Napi::CallbackInfo& info) {
+Napi::Object Mouse::getIcon(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
     Napi::Object result = Napi::Object::New(env);
 
@@ -286,7 +284,7 @@ Napi::Object getIcon(const Napi::CallbackInfo& info) {
 }
 
 
-void setX(const Napi::CallbackInfo& info) {
+void Mouse::setX(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
     if (info.Length() < 1) {
         Napi::TypeError::New(env, "Expected 1 argument").ThrowAsJavaScriptException();
@@ -342,7 +340,7 @@ void setX(const Napi::CallbackInfo& info) {
     return;
 }
 
-void setY(const Napi::CallbackInfo& info) {
+void Mouse::setY(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
     
     if (info.Length() < 1) {
@@ -400,7 +398,7 @@ void setY(const Napi::CallbackInfo& info) {
 }
 
 
-void buttonDown(const Napi::CallbackInfo& info) {
+void Mouse::buttonDown(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
     
     if (info.Length() < 1) {
@@ -503,7 +501,7 @@ void buttonDown(const Napi::CallbackInfo& info) {
     return;
 }
 
-void buttonUp(const Napi::CallbackInfo& info) {
+void Mouse::buttonUp(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
     
     if (info.Length() < 1) {
@@ -605,7 +603,7 @@ void buttonUp(const Napi::CallbackInfo& info) {
 }
 
 
-void scrollDown(const Napi::CallbackInfo& info) {
+void Mouse::scrollDown(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
     
     if (info.Length() < 2) {
@@ -689,7 +687,7 @@ void scrollDown(const Napi::CallbackInfo& info) {
     return;
 }
 
-void scrollUp(const Napi::CallbackInfo& info) {
+void Mouse::scrollUp(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
     
     if (info.Length() < 2) {
@@ -776,18 +774,18 @@ void scrollUp(const Napi::CallbackInfo& info) {
 
 Napi::Object Mouse::Init(Napi::Env env, Napi::Object exports) {
     Napi::Object obj = Napi::Object::New(env);
-    obj.Set(Napi::String::New(env, "getX"), Napi::Function::New(env, getX));
-    obj.Set(Napi::String::New(env, "getY"), Napi::Function::New(env, getY));
+    obj.Set(Napi::String::New(env, "getX"), Napi::Function::New(env, Mouse::getX));
+    obj.Set(Napi::String::New(env, "getY"), Napi::Function::New(env, Mouse::getY));
 
-    obj.Set(Napi::String::New(env, "getIcon"), Napi::Function::New(env, getIcon));
+    obj.Set(Napi::String::New(env, "getIcon"), Napi::Function::New(env, Mouse::getIcon));
 
-    obj.Set(Napi::String::New(env, "setX"), Napi::Function::New(env, setX));
-    obj.Set(Napi::String::New(env, "setY"), Napi::Function::New(env, setY));
+    obj.Set(Napi::String::New(env, "setX"), Napi::Function::New(env, Mouse::setX));
+    obj.Set(Napi::String::New(env, "setY"), Napi::Function::New(env, Mouse::setY));
 
-    obj.Set(Napi::String::New(env, "buttonDown"), Napi::Function::New(env, buttonDown));
-    obj.Set(Napi::String::New(env, "buttonUp"), Napi::Function::New(env, buttonUp));
+    obj.Set(Napi::String::New(env, "buttonDown"), Napi::Function::New(env, Mouse::buttonDown));
+    obj.Set(Napi::String::New(env, "buttonUp"), Napi::Function::New(env, Mouse::buttonUp));
 
-    obj.Set(Napi::String::New(env, "scrollDown"), Napi::Function::New(env, scrollDown));
-    obj.Set(Napi::String::New(env, "scrollUp"), Napi::Function::New(env, scrollUp));
+    obj.Set(Napi::String::New(env, "scrollDown"), Napi::Function::New(env, Mouse::scrollDown));
+    obj.Set(Napi::String::New(env, "scrollUp"), Napi::Function::New(env, Mouse::scrollUp));
     return obj;
 }

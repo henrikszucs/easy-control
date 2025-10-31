@@ -21,7 +21,6 @@
 
 
 // Helper function to convert KeyboardEvent.key string to Windows Virtual Key Code
-// Helper function to convert KeyboardEvent.key string to Windows Virtual Key Code
 #if defined(IS_WINDOWS)
 WORD keyToVirtualKeyCode(const std::string& key) {
     WORD vkCode = 0;
@@ -249,7 +248,7 @@ KeySym keyToVirtualKeyCode(const std::string& key) {
 #endif
 
 
-void keyDown(const Napi::CallbackInfo& info) {
+void Keyboard::keyDown(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
     if (info.Length() < 1) {
         Napi::TypeError::New(env, "Expected 1 argument").ThrowAsJavaScriptException();
@@ -305,7 +304,7 @@ void keyDown(const Napi::CallbackInfo& info) {
     return;
 }
 
-void keyUp(const Napi::CallbackInfo& info) {
+void Keyboard::keyUp(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
     if (info.Length() < 1) {
         Napi::TypeError::New(env, "Expected 1 argument").ThrowAsJavaScriptException();
@@ -361,7 +360,7 @@ void keyUp(const Napi::CallbackInfo& info) {
     return;
 }
 
-void type(const Napi::CallbackInfo& info) {
+void Keyboard::type(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
     if (info.Length() < 1) {
         Napi::TypeError::New(env, "Expected 1 argument").ThrowAsJavaScriptException();
@@ -517,10 +516,10 @@ void type(const Napi::CallbackInfo& info) {
 
 Napi::Object Keyboard::Init(Napi::Env env, Napi::Object exports) {
     Napi::Object obj = Napi::Object::New(env);
-    obj.Set(Napi::String::New(env, "keyDown"), Napi::Function::New(env, keyDown));
-    obj.Set(Napi::String::New(env, "keyUp"), Napi::Function::New(env, keyUp));
+    obj.Set(Napi::String::New(env, "keyDown"), Napi::Function::New(env, Keyboard::keyDown));
+    obj.Set(Napi::String::New(env, "keyUp"), Napi::Function::New(env, Keyboard::keyUp));
 
-    obj.Set(Napi::String::New(env, "type"), Napi::Function::New(env, type));
+    obj.Set(Napi::String::New(env, "type"), Napi::Function::New(env, Keyboard::type));
     
     return obj;
 }

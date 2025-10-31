@@ -81,7 +81,7 @@ Keyboard.type(text="");
 
 ### Controller
 ```js
-const isSupported = Controller.isSupport();
+const isSupported = Controller.isSupported();
 
 const isSuccess = Controller.install();
 

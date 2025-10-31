@@ -39,26 +39,31 @@ const build = async () => {
         "shell": true,
         "stdio": "inherit"
     });
-    await new Promise((resolve) => {
+    let code = await new Promise((resolve) => {
         ls.on("close", (code) => {
             console.log(`Building end with: ${code}`);
             resolve(code);
         });
     });
 
+    if (code !== 0) {
+        throw new Error("Build process failed");
+    }
 
     // copy built files
     process.stdout.write("Coping built files...    ");
     await fs.rm("./dist/", { "recursive": true, "force": true });   // for dev
-    await fs.mkdir("./dist/", { "recursive": true });               // for dev
+    await fs.mkdir("./dist/" + os.platform() + "-" + os.arch() + "/", { "recursive": true });
 
     await fs.copyFile("./src/easy-control.cjs", "./dist/easy-control.cjs");
+    
     if (os.platform() === "win32") {
-        await fs.copyFile("./build/Release/easy-control.node", "./dist/easy-control-" + os.platform() + "-" + os.arch() + ".node");
+        await fs.copyFile("./build/Release/easy-control.node", "./dist/" + os.platform() + "-" + os.arch() + "/easy-control.node");
+        await fs.cp("./src/vjoy_driver/", "./dist/" + os.platform() + "-" + os.arch() + "/vjoy_driver/", { "recursive": true });
     } else if (os.platform() === "darwin") {
-        await fs.copyFile("./build/Release/easy-control.node", "./dist/easy-control-" + os.platform() + "-" + os.arch() + ".node");
+        await fs.copyFile("./build/Release/easy-control.node", "./dist/" + os.platform() + "-" + os.arch() + "/easy-control.node");
     } else if (os.platform() === "linux") {
-        await fs.copyFile("./build/Release/easy-control.node", "./dist/easy-control-" + os.platform() + "-" + os.arch() + ".node");
+        await fs.copyFile("./build/Release/easy-control.node", "./dist/" + os.platform() + "-" + os.arch() + "/easy-control.node");
     }
     process.stdout.write("done\n");
 };
@@ -70,7 +75,8 @@ const uninstall = async () => {
     const pathList = [
         "./package-lock.json",
         "./node_modules",
-        "./build"
+        "./build",
+        "./.vscode"
     ];
     for (const dir of pathList) {
         try {

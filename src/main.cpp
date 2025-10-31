@@ -44,15 +44,24 @@
 	#define M_SQRT2 1.4142135623730950488016887 /* Fix for MSVC. */
 #endif
 
+#if defined(IS_WINDOWS)
+    #define STRICT /* Require use of exact types. */
+    #define WIN32_LEAN_AND_MEAN 1 /* Speed up compilation. */
+#endif
+
 // Include modules
 #include "mouse.h"
 #include "keyboard.h"
+#include "controller.h"
+#include "screen.h"
 
 
 Napi::Object InitAll(Napi::Env env, Napi::Object exports) {
     Napi::Object obj = Napi::Object::New(env);
     obj.Set(Napi::String::New(env, "Mouse"), Mouse::Init(env, exports));
     obj.Set(Napi::String::New(env, "Keyboard"), Keyboard::Init(env, exports));
+    obj.Set(Napi::String::New(env, "Controller"), Controller::Init(env, exports));
+    obj.Set(Napi::String::New(env, "Screen"), Screen::Init(env, exports));
 
     return obj;
 }
