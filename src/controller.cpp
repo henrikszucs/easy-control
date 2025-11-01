@@ -4,14 +4,15 @@
 
 #if defined(IS_WINDOWS)
     #include <windows.h>
-    
-    #include "vJoyInterface.h"
+
     #include <setupapi.h>
     #include <shellapi.h>
     #include <stdio.h>
     #include <string.h>
     #pragma comment(lib, "setupapi.lib")
     #pragma comment(lib, "shell32.lib")
+
+    #include "vJoyInterface.h"
 #elif defined(IS_MACOS)
     #include <IOKit/IOKitLib.h>
     #include <IOKit/hid/IOHIDLib.h>
@@ -24,6 +25,136 @@
     #include <string.h>
 #endif
 
+// Driver installation async implementation
+InstallDriver::InstallDriver(const Napi::Env& env) : Napi::AsyncWorker{env, "InstallDriver"}, m_deferred{env} {
+    
+}
+
+Napi::Promise InstallDriver::GetPromise() {
+    return m_deferred.Promise();
+}
+
+// Perform installation steps here
+void InstallDriver::Execute() {
+    
+    #if defined(IS_WINDOWS)
+        // Check if vJoy is already installed
+        int vJoyVersion = GetvJoyVersion();
+        if (vJoyVersion != 0) {
+            m_result = true;
+            return;
+        }
+
+        // Get absolute path .node file
+        char modulePath[MAX_PATH];
+        HMODULE hModule = NULL;
+        GetModuleHandleExA(
+            GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+            (LPCSTR)GetvJoyVersion,
+            &hModule
+        );
+        GetModuleFileNameA(hModule, modulePath, MAX_PATH);
+        char* lastSlash = strrchr(modulePath, '\\');
+        if (lastSlash != NULL) {
+            *lastSlash = '\0';
+        }
+        
+        // Setup installer path
+        char installerPath[MAX_PATH];
+        snprintf(installerPath, MAX_PATH, "%s\\vjoy_driver\\vJoyInstall.exe", modulePath);
+        char workingDir[MAX_PATH];
+        snprintf(workingDir, MAX_PATH, "%s\\vjoy_driver", modulePath);
+        
+        // Use ShellExecuteEx to run installer
+        SHELLEXECUTEINFOA sei = { 0 };
+        sei.cbSize = sizeof(SHELLEXECUTEINFOA);
+        sei.fMask = SEE_MASK_NOCLOSEPROCESS;
+        sei.lpVerb = "runas";
+        sei.lpFile = installerPath;
+        sei.lpDirectory = workingDir;
+        if (ShellExecuteExA(&sei)) {
+            if (sei.hProcess != NULL) {
+                // Wait for installer to finish (max 5 minutes)
+                DWORD waitResult = WaitForSingleObject(sei.hProcess, 300000);
+                
+                if (waitResult == WAIT_OBJECT_0) {
+                    // Get exit code
+                    DWORD exitCode = 0;
+                    GetExitCodeProcess(sei.hProcess, &exitCode);
+                    
+                    CloseHandle(sei.hProcess);
+                    
+                    // Wait a bit for system to register the driver
+                    for (int i = 0; i < 10; i++) {
+                        Sleep(500);
+                        // Verify installation
+                        int version = GetvJoyVersion();
+                        if (version != 0) {
+                            m_result = true;
+                            break;
+                        } else {
+                            m_result = false;
+                        }
+                    }
+                } else {
+                    // Timeout or error
+                    CloseHandle(sei.hProcess);
+                    m_result = false;
+                }
+            } else {
+                // No process handle - may happen with runas
+                // Just wait and verify
+                Sleep(60000);
+                int version = GetvJoyVersion();
+                if (version != 0) {
+                    m_result = true;
+                } else {
+                    m_result = false;
+                }
+            }
+        } else {
+            m_result = false;
+        }
+    #elif defined(IS_MACOS)
+        m_result = true; // Assume driver is pre-installed on macOS
+    #elif defined(IS_LINUX)
+        // Check if uinput module is loaded
+        FILE* procModules = fopen("/proc/modules", "r");
+        if (procModules != NULL) {
+            char line[256];
+            bool found = false;
+            while (fgets(line, sizeof(line), procModules)) {
+                if (strncmp(line, "uinput", 6) == 0) {
+                    found = true;
+                    break;
+                }
+            }
+            fclose(procModules);
+            if (found) {
+                m_result = true;
+            } else {
+                // Try to load uinput module
+                int ret = system("modprobe uinput");
+                if (ret == 0) {
+                    m_result = true;
+                } else {
+                    m_result = false;
+                }
+            }
+        } else {
+            m_result = false;
+        }
+    #endif
+}
+
+void InstallDriver::OnOK() {
+    Napi::Boolean val = Napi::Boolean::New(Env(), m_result);
+    m_deferred.Resolve(val);
+}
+
+void InstallDriver::OnError(const Napi::Error& err) {
+    m_deferred.Reject(err.Value());
+}
 
 
 
@@ -96,117 +227,14 @@ Napi::Boolean Controller::isSupported(const Napi::CallbackInfo& info) {
 
 
 
-Napi::Boolean Controller::install(const Napi::CallbackInfo& info) {
+Napi::Promise Controller::install(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
 
     bool success = true;
 
-    #if defined(IS_WINDOWS)
-    /*
-        // Check if vJoy is already installed
-        HMODULE vJoyDll = LoadVJoyDLL();
-        if (vJoyDll != NULL) {
-            // vJoy is already installed
-            UnloadVJoyDLL();
-            return Napi::Boolean::New(env, true);
-        }
-        
-        // Get the path to the vJoy installer
-        char modulePath[MAX_PATH];
-        HMODULE hModule = NULL;
-        
-        // Get the module handle for this DLL
-        GetModuleHandleExA(
-            GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-            (LPCSTR)&install,
-            &hModule
-        );
-        
-        if (GetModuleFileNameA(hModule, modulePath, MAX_PATH) > 0) {
-            // Get the directory of the module
-            char* lastSlash = strrchr(modulePath, '\\');
-            if (lastSlash != NULL) {
-                *lastSlash = '\0';
-            }
-            
-            // Construct the path to vJoy installer
-            char installerPath[MAX_PATH];
-            const char* possibleInstallers[] = {
-                "\\vjoy_driver\\vJoyInstall.exe"
-            };
-            
-            bool installerFound = false;
-            for (int i = 0; i < sizeof(possibleInstallers) / sizeof(possibleInstallers[0]); i++) {
-                snprintf(installerPath, MAX_PATH, "%s%s", modulePath, possibleInstallers[i]);
-                
-                // Check if installer exists
-                DWORD fileAttr = GetFileAttributesA(installerPath);
-                if (fileAttr != INVALID_FILE_ATTRIBUTES && !(fileAttr & FILE_ATTRIBUTE_DIRECTORY)) {
-                    installerFound = true;
-                    break;
-                }
-            }
-            
-            if (installerFound) {
-                // Run the installer with elevated privileges using ShellExecute
-                SHELLEXECUTEINFOA sei = { 0 };
-                sei.cbSize = sizeof(SHELLEXECUTEINFOA);
-                sei.fMask = SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NOASYNC;
-                sei.lpVerb = "runas"; // Request UAC elevation
-                sei.lpFile = installerPath;
-                sei.lpParameters = "/S /SILENT /VERYSILENT /SUPPRESSMSGBOXES /NORESTART";
-                sei.nShow = SW_HIDE; // Hide installer window
-                sei.hProcess = NULL;
-                
-                if (ShellExecuteExA(&sei)) {
-                    if (sei.hProcess != NULL) {
-                        // Wait for the installer to complete (timeout: 5 minutes)
-                        DWORD waitResult = WaitForSingleObject(sei.hProcess, 300000);
-                        
-                        if (waitResult == WAIT_OBJECT_0) {
-                            // Installer completed, check exit code
-                            DWORD exitCode = 0;
-                            if (GetExitCodeProcess(sei.hProcess, &exitCode)) {
-                                if (exitCode == 0) {
-                                    success = true;
-                                }
-                            }
-                        }
-                        
-                        CloseHandle(sei.hProcess);
-                    }
-                    
-                    // Verify installation by checking for vJoyInterface.dll
-                    Sleep(2000); // Wait for system to finalize installation
-                    vJoyDll = LoadLibraryA("vJoyInterface.dll");
-                    if (vJoyDll != NULL) {
-                        success = true;
-                        FreeLibrary(vJoyDll);
-                    }
-                } else {
-                    // ShellExecuteEx failed
-                    DWORD error = GetLastError();
-                    if (error == ERROR_CANCELLED) {
-                        // User cancelled UAC prompt
-                        success = false;
-                    }
-                }
-            } else {
-                // Installer not found - throw error
-                Napi::Error::New(env, "vJoy installer not found in win32-x64\\vjoy driver directory")
-                    .ThrowAsJavaScriptException();
-                return Napi::Boolean::New(env, false);
-            }
-        } else {
-            // Failed to get module path
-            Napi::Error::New(env, "Failed to locate module path")
-                .ThrowAsJavaScriptException();
-            return Napi::Boolean::New(env, false);
-        }
-            */
-    #endif
-
-    return Napi::Boolean::New(env, success);
+    InstallDriver* worker = new InstallDriver(env);
+    worker->Queue();
+    return worker->GetPromise();
 }
 
 Napi::Object Controller::list(const Napi::CallbackInfo& info) {

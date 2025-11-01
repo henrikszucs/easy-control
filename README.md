@@ -83,7 +83,7 @@ Keyboard.type(text="");
 ```js
 const isSupported = Controller.isSupported();
 
-const isSuccess = Controller.install();
+const isSuccess = await Controller.install();
 
 const contollers = Controller.list();
 
