@@ -20,6 +20,7 @@ npm run uninstall
 #### Windows
 - install Visual Studio [https://visualstudio.microsoft.com/vs/community/](https://visualstudio.microsoft.com/vs/community/) and select "Desktop development with C++" bundle
 - install Python 3.6+ [https://apps.microsoft.com/detail/9ncvdn91xzqp](https://apps.microsoft.com/detail/9ncvdn91xzqp)
+- install CMake [https://cmake.org/download/](https://cmake.org/download/)
 - ```npm install -g node-gyp```
 
 #### MacOS
@@ -87,17 +88,49 @@ const isSuccess = await Controller.install();
 
 const contollers = Controller.list();
 
-const controller1 = Controller.create(name);
+const controller1 = Controller.create();
 
-const status = controller1.isActive();
+const isActive = controller1.isActive(); // true or undefined
 
-controller1.keyDown(key);
-controller1.keyUp(key);
 
-controller1.setAxes(type, axes);
+/*
+btn - number from 0 to 32
+axis - number from 0 to 8
+direction - number from -1 to 1
+
+Example for standard Xbox360 controller corresponding values:
+    btn=0 - A button
+    btn=1 - B button
+    btn=2 - X button
+    btn=3 - Y button
+    btn=4 - left button
+    btn=5 - right button
+    btn=6 - left trigger
+    btn=7 - right trigger
+    btn=8 - select button
+    btn=9 - start button
+    btn=10 - left stick button
+    btn=11 - right stick button
+    btn=12 - d-pad up button
+    btn=13 - d-pad down button
+    btn=14 - d-pad left button
+    btn=15 - d-pad right button
+    btn=16 - home button
+
+    axis=0 - left stick horizontal direction: from -1 left to 1 right
+    axis=1 - left stick vertical direction: from -1 up to 1 down
+    axis=2 - right stick horizontal direction: from -1 left to 1 right
+    axis=3 - right stick vertical direction: from -1 up to 1 down
+
+*/
+controller1.buttonDown(btn=0);
+controller1.buttonUp(btn=0);
+controller1.setAxes(axis=0, direction=0);
+
 
 controller1.disconnect();
-controller1.delete();
+
+
 ```
 
 

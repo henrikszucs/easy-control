@@ -27,7 +27,7 @@
 
 // Driver installation async implementation
 InstallDriver::InstallDriver(const Napi::Env& env) : Napi::AsyncWorker{env, "InstallDriver"}, m_deferred{env} {
-    
+
 }
 
 Napi::Promise InstallDriver::GetPromise() {
@@ -38,11 +38,14 @@ Napi::Promise InstallDriver::GetPromise() {
 void InstallDriver::Execute() {
     
     #if defined(IS_WINDOWS)
-        // Check if vJoy is already installed
+        // Check if vJoy is already installed and version matches
         int vJoyVersion = GetvJoyVersion();
         if (vJoyVersion != 0) {
-            m_result = true;
-            return;
+            WORD VerDll, VerDrv;
+            if (DriverMatch(&VerDll, &VerDrv)) {
+                m_result = true;
+                return;
+            }
         }
 
         // Get absolute path .node file
@@ -166,7 +169,10 @@ Napi::Boolean Controller::isSupported(const Napi::CallbackInfo& info) {
     #if defined(IS_WINDOWS)
         int vJoyVersion = GetvJoyVersion();
         if (vJoyVersion != 0) {
-            supported = true;
+            WORD VerDll, VerDrv;
+            if (DriverMatch(&VerDll, &VerDrv)) {
+                supported = true;
+            }
         }
 
     #elif defined(IS_MACOS)
@@ -226,41 +232,32 @@ Napi::Boolean Controller::isSupported(const Napi::CallbackInfo& info) {
 }
 
 
-
 Napi::Promise Controller::install(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
-
-    bool success = true;
 
     InstallDriver* worker = new InstallDriver(env);
     worker->Queue();
     return worker->GetPromise();
 }
 
-Napi::Object Controller::list(const Napi::CallbackInfo& info) {
+
+Napi::Array Controller::list(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
 
-    Napi::Array displays = Napi::Array::New(env);
+    Napi::Array controllers = Napi::Array::New(env);
 
-    #if defined(IS_WINDOWS)
-        // Windows implementation to list displays
-        // Placeholder: Add actual implementation here
+    for (size_t i = 0; i < Controller::controllers().size(); i++) {
+        controllers.Set(i, Controller::controllers().at(i).Value());
+    }
 
-    #elif defined(IS_MACOS)
-        // MacOS implementation to list displays
-        // Placeholder: Add actual implementation here
-
-    #elif defined(IS_LINUX)
-        // X11 implementation to list displays
-        // Placeholder: Add actual implementation here
-
-    #endif
-
-    return displays;
+    return controllers;
 }
 
 Napi::Object Controller::create(const Napi::CallbackInfo& info) {
-    return Controller::NewInstance(info.Env());
+    Napi::Env env = info.Env();
+    Napi::Object new_controller = Controller::NewInstance(env);
+    Controller::controllers().push_back(Napi::Persistent(new_controller));
+    return new_controller;
 }
 
 Napi::Object Controller::NewInstance(Napi::Env env) {
@@ -269,30 +266,251 @@ Napi::Object Controller::NewInstance(Napi::Env env) {
     return scope.Escape(napi_value(obj)).ToObject();
 }
 
+std::vector<Napi::ObjectReference>& Controller::controllers() {
+    static std::vector<Napi::ObjectReference> m_controllers;
+    return m_controllers;
+}
+
 Controller::Controller(const Napi::CallbackInfo& info) : Napi::ObjectWrap<Controller>(info) {
+    this->m_id = Controller::controllers().size();
+    
+    #if defined(IS_WINDOWS)
+        while (this->m_id < 16 && GetVJDStatus(this->m_id) != VJD_STAT_FREE) {
+            this->m_id++;
+        }
+        if (this->m_id >= 16) {
+            Napi::TypeError::New(info.Env(), "No free virtual controller slots available").ThrowAsJavaScriptException();
+            return;
+        }
+        BOOL isGetted = AcquireVJD(this->m_id);
+        if (!isGetted) {
+            Napi::TypeError::New(info.Env(), "Failed to acquire virtual controller").ThrowAsJavaScriptException();
+            return;
+        }
+        ResetVJD(this->m_id);
 
+    #elif defined(IS_MACOS)
+        // Initialize IOKit HID resources if needed
+    #elif defined(IS_LINUX)
+        // Initialize uinput file descriptor if needed
+        // TODO: Implement Linux uinput initialization
+    #endif
+    
+    this->m_active = true;
+}
+
+Controller::~Controller() {
+    if (!this->m_active) {
+        return;
+    }
+    this->m_active = false;
+
+    #if defined(IS_WINDOWS)
+        RelinquishVJD(this->m_id);
+    #elif defined(IS_MACOS)
+        // Release IOKit resources if any
+        // TODO: Implement macOS cleanup
+    #elif defined(IS_LINUX)
+        // Close uinput file descriptor if open
+        // TODO: Implement Linux cleanup
+    #endif
+    
+    // Remove from controllers list
+    auto& controllers = Controller::controllers();
+    for (size_t i = 0; i < controllers.size(); i++) {
+        Napi::Object obj = controllers[i].Value();
+        Controller* ctrl = Controller::Unwrap(obj);
+        if (ctrl == this) {
+            controllers.erase(controllers.begin() + i);
+            break;
+        }
+    }
 }
 
 
-
-void Controller::keyDown(const Napi::CallbackInfo& info) {
-
+Napi::Value Controller::isActive(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    return Napi::Boolean::New(env, this->m_active);
 }
 
-void Controller::keyUp(const Napi::CallbackInfo& info) {
+void Controller::buttonDown(const Napi::CallbackInfo& info) {
+    if (!this->m_active) {
+        return;
+    }
 
+    Napi::Env env = info.Env();
+    
+    // Validate parameters
+    if (info.Length() < 1) {
+        Napi::TypeError::New(env, "Button ID is required").ThrowAsJavaScriptException();
+        return;
+    }
+    
+    if (!info[0].IsNumber()) {
+        Napi::TypeError::New(env, "Button ID must be a number").ThrowAsJavaScriptException();
+        return;
+    }
+
+
+    #if defined(IS_WINDOWS)
+        int buttonId = info[0].As<Napi::Number>().Int32Value();
+        
+        // Validate button ID (vJoy supports buttons 1-128)
+        if (buttonId < 1 || buttonId > 128) {
+            Napi::RangeError::New(env, "Button ID must be between 1 and 128").ThrowAsJavaScriptException();
+            return;
+        }
+        
+        // Check if button exists on this device
+        int maxButtons = GetVJDButtonNumber(this->m_id);
+        if (buttonId > maxButtons) {
+            Napi::RangeError::New(env, "Button ID exceeds available buttons on this controller").ThrowAsJavaScriptException();
+            return;
+        }
+        
+        // Press the button (TRUE = pressed)
+        BOOL result = SetBtn(TRUE, this->m_id, buttonId);
+        
+        if (!result) {
+            Napi::Error::New(env, "Failed to press button").ThrowAsJavaScriptException();
+            return;
+        }
+
+    #elif defined(IS_MACOS)
+
+    #elif defined(IS_LINUX)
+
+    #endif
 }
 
-void Controller::setAxes(const Napi::CallbackInfo& info) {
+void Controller::buttonUp(const Napi::CallbackInfo& info) {
+    if (!this->m_active) {
+        return;
+    }
 
+    Napi::Env env = info.Env();
+    
+    // Validate parameters
+    if (info.Length() < 1) {
+        Napi::TypeError::New(env, "Button ID is required").ThrowAsJavaScriptException();
+        return;
+    }
+    
+    if (!info[0].IsNumber()) {
+        Napi::TypeError::New(env, "Button ID must be a number").ThrowAsJavaScriptException();
+        return;
+    }
+
+
+    #if defined(IS_WINDOWS)
+        int buttonId = info[0].As<Napi::Number>().Int32Value();
+        
+        // Validate button ID (vJoy supports buttons 1-128)
+        if (buttonId < 1 || buttonId > 128) {
+            Napi::RangeError::New(env, "Button ID must be between 1 and 128").ThrowAsJavaScriptException();
+            return;
+        }
+        
+        // Check if button exists on this device
+        int maxButtons = GetVJDButtonNumber(this->m_id);
+        if (buttonId > maxButtons) {
+            Napi::RangeError::New(env, "Button ID exceeds available buttons on this controller").ThrowAsJavaScriptException();
+            return;
+        }
+        
+        // Press the button (FALSE = released)
+        BOOL result = SetBtn(FALSE, this->m_id, buttonId);
+        
+        if (!result) {
+            Napi::Error::New(env, "Failed to press button").ThrowAsJavaScriptException();
+            return;
+        }
+
+    #elif defined(IS_MACOS)
+
+    #elif defined(IS_LINUX)
+
+    #endif
+}
+    
+
+void Controller::setAxis(const Napi::CallbackInfo& info) {
+    if (!this->m_active) {
+        return;
+    }
+
+    Napi::Env env = info.Env();
+    
+    // Validate parameters
+    if (info.Length() < 2) {
+        Napi::TypeError::New(env, "Axis ID and value are required").ThrowAsJavaScriptException();
+        return;
+    }
+    
+    if (!info[0].IsNumber()) {
+        Napi::TypeError::New(env, "Axis ID must be a number").ThrowAsJavaScriptException();
+        return;
+    }
+    
+    if (!info[1].IsNumber()) {
+        Napi::TypeError::New(env, "Axis value must be a number").ThrowAsJavaScriptException();
+        return;
+    }
+
+    #if defined(IS_WINDOWS)
+        int axisId = info[0].As<Napi::Number>().Int32Value();
+        double axisValue = info[1].As<Napi::Number>().DoubleValue();
+        
+        // Validate axis value (0.0 to 1.0, where 0.5 is center)
+        if (axisValue < 0.0 || axisValue > 1.0) {
+            Napi::RangeError::New(env, "Axis value must be between 0.0 and 1.0").ThrowAsJavaScriptException();
+            return;
+        }
+        
+        // Convert normalized value (0.0-1.0) to vJoy range (0x1-0x8000)
+        // vJoy uses range 0x1 (1) to 0x8000 (32768)
+        LONG vJoyValue = (LONG)(axisValue * 0x7FFF) + 0x1;
+        
+        // Map axis ID to vJoy HID usage
+        UINT vJoyAxis;
+        switch (axisId) {
+            case 0: vJoyAxis = HID_USAGE_X; break;
+            case 1: vJoyAxis = HID_USAGE_Y; break;
+            case 2: vJoyAxis = HID_USAGE_Z; break;
+            case 3: vJoyAxis = HID_USAGE_RX; break;
+            case 4: vJoyAxis = HID_USAGE_RY; break;
+            case 5: vJoyAxis = HID_USAGE_RZ; break;
+            case 6: vJoyAxis = HID_USAGE_SL0; break; // Slider
+            case 7: vJoyAxis = HID_USAGE_SL1; break; // Dial
+            default:
+                Napi::RangeError::New(env, "Axis ID must be between 0 and 7").ThrowAsJavaScriptException();
+                return;
+        }
+        
+        // Check if axis exists on this device
+        if (!GetVJDAxisExist(this->m_id, vJoyAxis)) {
+            Napi::Error::New(env, "Axis does not exist on this controller").ThrowAsJavaScriptException();
+            return;
+        }
+        
+        // Set the axis value
+        BOOL result = SetAxis(vJoyValue, this->m_id, vJoyAxis);
+        
+        if (!result) {
+            Napi::Error::New(env, "Failed to set axis value").ThrowAsJavaScriptException();
+            return;
+        }
+
+    #elif defined(IS_MACOS)
+
+    #elif defined(IS_LINUX)
+
+    #endif
 }
 
 void Controller::disconnect(const Napi::CallbackInfo& info) {
-
-}
-
-void Controller::deleteController(const Napi::CallbackInfo& info) {
-
+    // Call destructor
+    this->~Controller();
 }
 
 
@@ -309,11 +527,11 @@ Napi::Object Controller::Init(Napi::Env env, Napi::Object exports) {
     Napi::Function func = DefineClass(env,
         "Controller",
         {
-            InstanceMethod("keyDown", &Controller::keyDown),
-            InstanceMethod("keyUp", &Controller::keyUp),
-            InstanceMethod("setAxes", &Controller::setAxes),
-            InstanceMethod("disconnect", &Controller::disconnect),
-            InstanceMethod("delete", &Controller::deleteController)
+            InstanceMethod("isActive", &Controller::isActive),
+            InstanceMethod("buttonDown", &Controller::buttonDown),
+            InstanceMethod("buttonUp", &Controller::buttonUp),
+            InstanceMethod("setAxis", &Controller::setAxis),
+            InstanceMethod("disconnect", &Controller::disconnect)
         }
     );
     Napi::FunctionReference* constructor = new Napi::FunctionReference();

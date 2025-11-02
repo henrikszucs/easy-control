@@ -67,6 +67,7 @@ const build = async () => {
             "./src/vjoy_driver/vjoy.inf", "./dist/" + os.platform() + "-" + os.arch() + "/vjoy_driver/vjoy.inf",
             "./src/vjoy_driver/vJoy.sys", "./dist/" + os.platform() + "-" + os.arch() + "/vjoy_driver/vJoy.sys",
             "./src/vjoy_driver/vJoyInstall.exe", "./dist/" + os.platform() + "-" + os.arch() + "/vjoy_driver/vJoyInstall.exe",
+            "./src/vjoy_driver/WdfCoinstaller01009.dll", "./dist/" + os.platform() + "-" + os.arch() + "/WdfCoinstaller01009.dll",
 
             "./src/vjoy_driver/lib/x64/vJoyInstall.dll", "./dist/" + os.platform() + "-" + os.arch() + "/vJoyInstall.dll",
             "./src/vjoy_driver/lib/x64/vJoyInterface.dll", "./dist/" + os.platform() + "-" + os.arch() + "/vJoyInterface.dll",

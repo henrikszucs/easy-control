@@ -21,6 +21,20 @@ const main = async () => {
     }
     const controller = Control.Controller.create();
     console.log(controller);
-    console.log(controller.keyDown);
+    console.log(Control.Controller.list());
+    for (let i = 0; i < 4; i++) {
+        console.log("press button 1");
+        controller.buttonDown(1);
+        await new Promise((resolve) => setTimeout(resolve, 500));
+        controller.buttonUp(1);
+        await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+    
+    console.log(controller.isActive());
+    console.log("turn off");
+    controller.disconnect();
+    console.log(controller.isActive());
+    console.log(controller);
+    console.log(Control.Controller.list());
 };
 main();
