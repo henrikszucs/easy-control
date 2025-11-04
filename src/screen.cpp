@@ -6,6 +6,7 @@
     #include <windows.h>
     #include <shellscalingapi.h>
     #include <vector>
+    #pragma comment(lib, "Shcore.lib")
 #elif defined(IS_MACOS)
     #include <ApplicationServices/ApplicationServices.h>
     #include <CoreGraphics/CoreGraphics.h>
@@ -22,8 +23,8 @@ struct ScreenInfo {
     bool isPrimary;
     int width;
     int height;
-    int xOffset;
-    int yOffset;
+    int x;
+    int y;
     double scaleFactor;
 };
 
@@ -40,30 +41,34 @@ BOOL CALLBACK MonitorEnumProc(HMONITOR hMonitor, HDC hdcMonitor, LPRECT lprcMoni
         // Check if this is the primary monitor
         screen.isPrimary = (monitorInfo.dwFlags & MONITORINFOF_PRIMARY) != 0;
         
-        // Get monitor rectangle (in virtual screen coordinates)
+        // Get monitor rectangle (in virtual screen coordinates - these are LOGICAL pixels)
         RECT rect = monitorInfo.rcMonitor;
+
+        // Get per-monitor DPI (Windows 8.1+)
+        UINT dpiX = 96;
+        UINT dpiY = 96;
         
-        // Get scale factor using GetScaleFactorForMonitor (Windows 8.1+)
-        double cxLogical = monitorInfo.rcMonitor.right - monitorInfo.rcMonitor.left;
-        double cyLogical = monitorInfo.rcMonitor.bottom - monitorInfo.rcMonitor.top;
-        DEVMODE devMode;
-        devMode.dmSize = sizeof(devMode);
-        devMode.dmDriverExtra = 0;
-        EnumDisplaySettings(monitorInfo.szDevice, ENUM_CURRENT_SETTINGS, &devMode);
-        double cxPhysical = devMode.dmPelsWidth;
-        double cyPhysical = devMode.dmPelsHeight;
-        // Calculate the scaling factor
-        double horizontalScale = ((double) cxPhysical / (double) cxLogical);
-        double verticalScale = ((double) cyPhysical / (double) cyLogical);
+        HRESULT hr = GetDpiForMonitor(hMonitor, MDT_EFFECTIVE_DPI, &dpiX, &dpiY);
+        if (!SUCCEEDED(hr)) {
+            // Fallback to system DPI
+            HDC hdc = GetDC(NULL);
+            dpiX = GetDeviceCaps(hdc, LOGPIXELSX);
+            dpiY = GetDeviceCaps(hdc, LOGPIXELSY);
+            ReleaseDC(NULL, hdc);
+        }
         
-        screen.scaleFactor = (double)verticalScale;
+        // Calculate the scale factor (96 DPI = 100% = 1.0)
+        screen.scaleFactor = (double)dpiY / 96.0;
         
-        // Get dimensions in logical pixels (already scaled by Windows)
-        // Do NOT divide by scaleFactor - GetMonitorInfo returns logical coordinates
-        screen.width = rect.right - rect.left;
-        screen.height = rect.bottom - rect.top;
-        screen.xOffset = rect.left;
-        screen.yOffset = rect.top;
+        // Logical dimensions from monitor rect
+        screen.width = (int)((rect.right - rect.left) / screen.scaleFactor);
+        screen.height = (int)((rect.bottom - rect.top) / screen.scaleFactor);
+        
+        // Logical offsets from monitor rect
+        screen.x = (int)(rect.left / screen.scaleFactor);
+        screen.y = (int)(rect.top / screen.scaleFactor);
+        
+        
         
         screens->push_back(screen);
     }
@@ -89,8 +94,8 @@ Napi::Array Screen::list(const Napi::CallbackInfo& info) {
             screenObj.Set("isPrimary", Napi::Boolean::New(env, screens[i].isPrimary));
             screenObj.Set("width", Napi::Number::New(env, screens[i].width));
             screenObj.Set("height", Napi::Number::New(env, screens[i].height));
-            screenObj.Set("xOffset", Napi::Number::New(env, screens[i].xOffset));
-            screenObj.Set("yOffset", Napi::Number::New(env, screens[i].yOffset));
+            screenObj.Set("x", Napi::Number::New(env, screens[i].x));
+            screenObj.Set("y", Napi::Number::New(env, screens[i].y));
             screenObj.Set("scaleFactor", Napi::Number::New(env, screens[i].scaleFactor));
             
             result.Set(i, screenObj);
@@ -140,13 +145,13 @@ Napi::Array Screen::list(const Napi::CallbackInfo& info) {
                 // macOS uses a coordinate system where (0,0) is bottom-left of main display
                 // Convert to top-left origin for consistency
                 CGRect mainBounds = CGDisplayBounds(mainDisplay);
-                int yOffset = (int)(mainBounds.size.height - bounds.origin.y - bounds.size.height);
+                int y = (int)(mainBounds.size.height - bounds.origin.y - bounds.size.height);
                 
                 screenObj.Set("isPrimary", Napi::Boolean::New(env, isPrimary));
                 screenObj.Set("width", Napi::Number::New(env, (int)bounds.size.width));
                 screenObj.Set("height", Napi::Number::New(env, (int)bounds.size.height));
-                screenObj.Set("xOffset", Napi::Number::New(env, (int)bounds.origin.x));
-                screenObj.Set("yOffset", Napi::Number::New(env, yOffset));
+                screenObj.Set("x", Napi::Number::New(env, (int)bounds.origin.x));
+                screenObj.Set("y", Napi::Number::New(env, y));
                 screenObj.Set("scaleFactor", Napi::Number::New(env, scaleFactor));
                 
                 result.Set(i, screenObj);
@@ -196,8 +201,8 @@ Napi::Array Screen::list(const Napi::CallbackInfo& info) {
                             screenObj.Set("isPrimary", Napi::Boolean::New(env, isPrimary));
                             screenObj.Set("width", Napi::Number::New(env, (int)crtcInfo->width));
                             screenObj.Set("height", Napi::Number::New(env, (int)crtcInfo->height));
-                            screenObj.Set("xOffset", Napi::Number::New(env, (int)crtcInfo->x));
-                            screenObj.Set("yOffset", Napi::Number::New(env, (int)crtcInfo->y));
+                            screenObj.Set("x", Napi::Number::New(env, (int)crtcInfo->x));
+                            screenObj.Set("y", Napi::Number::New(env, (int)crtcInfo->y));
                             screenObj.Set("scaleFactor", Napi::Number::New(env, scaleFactor));
                             
                             result.Set(result.Length(), screenObj);
@@ -219,8 +224,8 @@ Napi::Array Screen::list(const Napi::CallbackInfo& info) {
             screenObj.Set("isPrimary", Napi::Boolean::New(env, true));
             screenObj.Set("width", Napi::Number::New(env, DisplayWidth(display, screen)));
             screenObj.Set("height", Napi::Number::New(env, DisplayHeight(display, screen)));
-            screenObj.Set("xOffset", Napi::Number::New(env, 0));
-            screenObj.Set("yOffset", Napi::Number::New(env, 0));
+            screenObj.Set("x", Napi::Number::New(env, 0));
+            screenObj.Set("y", Napi::Number::New(env, 0));
             screenObj.Set("scaleFactor", Napi::Number::New(env, 1.0));
             
             result.Set(0, screenObj);

@@ -11,9 +11,9 @@ const main = async () => {
     console.log(Control.Mouse.getIcon());
     console.log(Control.Mouse.setX(1500));
     
-    console.log(Control.Screen.list());
+   
     */
-
+ console.log(Control.Screen.list());
     console.log(Control.Controller.list());
     console.log(Control.Controller.isSupported());
     if (!Control.Controller.isSupported()) {

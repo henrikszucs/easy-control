@@ -1,47 +1,28 @@
 # easy-control
 Simple and easy to use node.js module to handle mouse, keyboard and controller input for Windows, MacOS and Linux.
 
-## Building
 
-```
-npm install
-npm run build
-```
-
-### Uninstall
-```
-npm run uninstall
-```
-
-> [!CAUTION]
-> For building need additional tools. It differs in every operating system.
-
-### Dependencies
-#### Windows
-- install Visual Studio [https://visualstudio.microsoft.com/vs/community/](https://visualstudio.microsoft.com/vs/community/) and select "Desktop development with C++" bundle
-- install Python 3.6+ [https://apps.microsoft.com/detail/9ncvdn91xzqp](https://apps.microsoft.com/detail/9ncvdn91xzqp)
-- install CMake [https://cmake.org/download/](https://cmake.org/download/)
-- ```npm install -g node-gyp```
-
-#### MacOS
-- install Xcode [https://apps.apple.com/us/app/xcode/id497799835](https://apps.apple.com/us/app/xcode/id497799835)
-
-#### Linux
-- ```sudo apt-get install libxtst-dev libpng++-dev gcc```
 
 ## Usage
 
 ```js
-import { Mouse, Keyboard,  Controller, Screen } from "./dist/easy-control.cjs";
+// Module import
+import { Mouse, Keyboard,  Controller, Screen } from "./dist/easy-control.mjs";
+// CommonJS import
+const { Mouse, Keyboard,  Controller, Screen } = require("./dist/easy-control.cjs");
+// Electron import example (need OS absolute route to .node file)
+const absolutePath = "/tmp/dist/easy-control.node"
+const { Mouse, Keyboard,  Controller, Screen } = require(absolutePath);
 
 /*
-    !!! Function calculate and return with X and Y positions with scaled value !!!
+    !!! Function calculate with X and Y positions with scaled value !!!
 
-    Example: 1920 x 1080 with 1.25 (125% scale) >> right bottom corner >> 1536 x 864
+    Example: 1920 x 1080 screen with 1.25 (125% scale) >> the sreen size will be 1536 x 864
 
-    If you want convert normal pixel to scaled just divide by scale e.g. 1920/1.25 = 1536
-    
-    If you want convert scaled pixel to normal just multiply is by scale e.g. 1536*1.25 = 1920
+Note:
+    - If you want convert normal pixel to scaled just divide by scale e.g. 1920/1.25 = 1536
+    - If you want convert scaled pixel to normal just multiply is by scale e.g. 1536*1.25 = 1920
+    - Node.js cannot known the true size of the screen (probably lack of GPU support), it will return 1 scale
 */
 ```
 
@@ -159,8 +140,36 @@ const screens = Screen.list();
 */
 ```
 
+## Testing
 
+The tests run in electron enviroment. Copy ./dev/test folder to electron app and run.
 
+## Building
 
+```
+npm install
+npm run build
+```
+
+### Uninstall
+```
+npm run uninstall
+```
+
+> [!CAUTION]
+> For building need additional tools. It differs in every operating system.
+
+### Dependencies
+#### Windows
+- install Visual Studio [https://visualstudio.microsoft.com/vs/community/](https://visualstudio.microsoft.com/vs/community/) and select "Desktop development with C++" bundle
+- install Python 3.6+ [https://apps.microsoft.com/detail/9ncvdn91xzqp](https://apps.microsoft.com/detail/9ncvdn91xzqp)
+- install CMake [https://cmake.org/download/](https://cmake.org/download/)
+- ```npm install -g node-gyp```
+
+#### MacOS
+- install Xcode [https://apps.apple.com/us/app/xcode/id497799835](https://apps.apple.com/us/app/xcode/id497799835)
+
+#### Linux
+- ```sudo apt-get install libxtst-dev libpng++-dev gcc```
 
 
