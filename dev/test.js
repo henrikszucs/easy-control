@@ -12,7 +12,7 @@ const main = async () => {
     console.log(Control.Mouse.setX(1500));
     
    
-    */
+    
  console.log(Control.Screen.list());
     console.log(Control.Controller.list());
     console.log(Control.Controller.isSupported());
@@ -36,5 +36,17 @@ const main = async () => {
     console.log(controller.isActive());
     console.log(controller);
     console.log(Control.Controller.list());
+    */
+    console.log("Keyboard test");
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    Control.Keyboard.keyDown("a");
+    Control.Keyboard.keyUp("a");
+    console.log("Keyboard test");
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    Control.Keyboard.keyDown("ő");
+    Control.Keyboard.keyUp("ő");
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    Control.Keyboard.keyDown("Meta");
+    Control.Keyboard.keyUp("Meta");
 };
 main();

@@ -1,7 +1,9 @@
 #include "mouse.h"
 
 #if defined(IS_WINDOWS)
-    #include <windows.h>
+    #include <shellscalingapi.h>
+    #include <vector>
+    #pragma comment(lib, "Shcore.lib")
 #elif defined(IS_MACOS)
     #include <ApplicationServices/ApplicationServices.h>
 #elif defined(IS_LINUX)
@@ -18,7 +20,27 @@ Napi::Number Mouse::getX(const Napi::CallbackInfo& info) {
     #if defined(IS_WINDOWS)
         POINT point;
         GetCursorPos(&point);
-        return Napi::Number::New(env, point.x);
+        
+        // Get the monitor that contains this point
+        HMONITOR hMonitor = MonitorFromPoint(point, MONITOR_DEFAULTTONEAREST);
+        
+        // Get DPI for this monitor
+        UINT dpiX = 96;
+        UINT dpiY = 96;
+        
+        HRESULT hr = GetDpiForMonitor(hMonitor, MDT_EFFECTIVE_DPI, &dpiX, &dpiY);
+        if (!SUCCEEDED(hr)) {
+            // Fallback to system DPI
+            HDC hdc = GetDC(NULL);
+            dpiX = GetDeviceCaps(hdc, LOGPIXELSX);
+            ReleaseDC(NULL, hdc);
+        }
+        
+        // Calculate scale factor
+        double scaleFactor = (double)dpiX / 96.0;
+        
+        // Return logical position (physical position / scale factor)
+        return Napi::Number::New(env, (double)point.x / scaleFactor);
 
     #elif defined(IS_MACOS)
         CGEventRef event = CGEventCreate(NULL);
@@ -53,7 +75,27 @@ Napi::Number Mouse::getY(const Napi::CallbackInfo& info) {
     #if defined(IS_WINDOWS)
         POINT point;
         GetCursorPos(&point);
-        return Napi::Number::New(env, point.y);
+        
+        // Get the monitor that contains this point
+        HMONITOR hMonitor = MonitorFromPoint(point, MONITOR_DEFAULTTONEAREST);
+        
+        // Get DPI for this monitor
+        UINT dpiX = 96;
+        UINT dpiY = 96;
+        
+        HRESULT hr = GetDpiForMonitor(hMonitor, MDT_EFFECTIVE_DPI, &dpiX, &dpiY);
+        if (!SUCCEEDED(hr)) {
+            // Fallback to system DPI
+            HDC hdc = GetDC(NULL);
+            dpiY = GetDeviceCaps(hdc, LOGPIXELSY);
+            ReleaseDC(NULL, hdc);
+        }
+        
+        // Calculate scale factor
+        double scaleFactor = (double)dpiY / 96.0;
+        
+        // Return logical position (physical position / scale factor)
+        return Napi::Number::New(env, (double)point.y / scaleFactor);
 
     #elif defined(IS_MACOS)
         CGEventRef event = CGEventCreate(NULL);

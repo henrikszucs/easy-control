@@ -1,9 +1,6 @@
 #include "screen.h"
 
 #if defined(IS_WINDOWS)
-    #define STRICT
-    #define WIN32_LEAN_AND_MEAN
-    #include <windows.h>
     #include <shellscalingapi.h>
     #include <vector>
     #pragma comment(lib, "Shcore.lib")

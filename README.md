@@ -34,19 +34,19 @@ const y = Mouse.getY();
 const icon = Mouse.getIcon();
 /*
 {
-    "width": 32,
-    "height": 32,
-    "data": [0,1,2...], //argb data
-    "xOffset": 0,
-    "yOffset": 0
+    "width": 32,        // icon width
+    "height": 32,       // icon height
+    "data": [0,1,2...], // image in argb data
+    "xOffset": 0,       // pointer X offset from icon
+    "yOffset": 0        // pointer Y offset from icon
 }
 */
 
 Mouse.setX(x);
 Mouse.setY(y);
 
-Mouse.buttonDown(btn);  // right | middle | left | back | forward
-Mouse.buttonUp(btn);    // right | middle | left | back | forward
+Mouse.buttonDown(btn);  // "right" | "middle" | "left" | "back" | "forward"
+Mouse.buttonUp(btn);    // "right" | "middle" | "left" | "back" | "forward"
 
 Mouse.scrollDown(amount=1, isHorizontal=false); // down or right scroll
 Mouse.scrollUp(amount=1, isHorizontal=false);   // up or left scroll
@@ -54,10 +54,10 @@ Mouse.scrollUp(amount=1, isHorizontal=false);   // up or left scroll
 
 ### Keyboard
 ```js
-Keyboard.keyDown(key);  //https://developer.mozilla.org/en-US/docs/Web/API/KeyboardEvent/key
-Keyboard.keyUp(key);
+Keyboard.keyDown(key="");  // key value is a KeyboardEvent "key" property string (https://developer.mozilla.org/en-US/docs/Web/API/UI_Events/Keyboard_event_key_values)
+Keyboard.keyUp(key="");
 
-Keyboard.type(text="");
+const isHotkeySupported = Keyboard.isHotkeySupported(key=""); // check if special (non characters) hotkeys is supported.
 ```
 
 
@@ -71,7 +71,7 @@ const contollers = Controller.list();
 
 const controller1 = Controller.create();
 
-const isActive = controller1.isActive(); // true or undefined
+const isActive = controller1.isActive(); // true or undefined if disconnected
 
 
 /*
@@ -106,8 +106,7 @@ Example for standard Xbox360 controller corresponding values:
 */
 controller1.buttonDown(btn=0);
 controller1.buttonUp(btn=0);
-controller1.setAxes(axis=0, direction=0);
-
+controller1.setAxis(axis=0, direction=0);
 
 controller1.disconnect();
 
@@ -124,16 +123,16 @@ const screens = Screen.list();
         "isPrimary": true,
         "width": 1536,
         "height": 864,
-        "xOffset": 0,
-        "yOffset": 0,
+        "x": 0,
+        "y": 0,
         "scaleFactor": 1.25
     },
     {
         "isPrimary": false,
         "width": 1680,
         "height": 900,
-        "xOffset": -1680,
-        "yOffset": 0,
+        "x": -1680,
+        "y": 0,
         "scaleFactor": 1
     }
 ]
@@ -157,7 +156,7 @@ npm run uninstall
 ```
 
 > [!CAUTION]
-> For building need additional tools. It differs in every operating system.
+> For building need additional tools. It is different in every operating system.
 
 ### Dependencies
 #### Windows
