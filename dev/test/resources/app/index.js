@@ -14,13 +14,23 @@ const main = async function() {
     // load native module
     const appPath = await ipcRenderer.invoke("api", "path-app");
     let packagePath = path.join(appPath, "../../../../dist", os.platform() + "-" + os.arch(), "easy-control.node");
-    const Control = require(packagePath);
+    globalThis.Control = require(packagePath);
     console.log(Control);
+
+    window.addEventListener("keydown", function(event) {
+        console.log("Key down event (window listener):", event.key);
+    });
+    window.addEventListener("keyup", function(event) {
+        console.log("Key up event (window listener):", event.key);
+    });
+    /*
+    setTimeout( function() {Control.Keyboard.keyDown("a");Control.Keyboard.keyUp("a");}, 1000);
+    */
 
     document.getElementById("start-btn").addEventListener("click", async function() {
         const logElem = document.getElementById("log");
         logElem.innerHTML = "";
-
+/*
         // place Window
         ipcRenderer.send("api", "set-primary-monitor");
         ipcRenderer.send("api", "maximize-window");
@@ -193,13 +203,13 @@ const main = async function() {
         }
 
         logElem.innerHTML += "<li style='color:green'>Mouse API test passed.</li>";
-
+*/
 
         //test Keyboard API
-        const testKey = function(key) {
+        const testKey = async function(keyBtn) {
             return new Promise((resolve, reject) => {
                 let timeoutId = -1;
-                const timeoutFn = function() {
+                const timeoutFn = () => {
                     clearTimeout(timeoutId);
                     window.removeEventListener("keydown", keyListener);
                     window.removeEventListener("keyup", keyListener2);
@@ -207,18 +217,19 @@ const main = async function() {
                 };
 
                 let isDown = false;
-                const keyListener = function (event) {
-                    if (event.key === key) {
+                const keyListener = (event) => {
+                    console.log("Key down event:", event.key);
+                    if (event.key === keyBtn) {
                         window.removeEventListener("keydown", keyListener);
                         isDown = true;
                     }
                 };
-                const keyListener2 = function (event) {
+                const keyListener2 = (event) => {
                     clearTimeout(timeoutId);
                     window.removeEventListener("keyup", keyListener2);
-
-                    if (event.key !== key) {
-                        console.log("Expected key:", key, "; Received key:", event.key);
+                    console.log("Key up event:", event.key);
+                    if (event.key !== keyBtn) {
+                        console.log("Expected key:", keyBtn, "; Received key:", event.key);
                         reject(new Error("Received key does not match!"));
                         return;
                     }
@@ -227,18 +238,19 @@ const main = async function() {
                         reject(new Error("Key was not registered as down!"));
                         return;
                     }
-                    console.log("Expected key:", key, "; Received key:", event.key);
+                    console.log("Expected key:", keyBtn, "; Received key:", event.key);
                     resolve(true);
                 };
                 window.addEventListener("keydown", keyListener);
                 window.addEventListener("keyup", keyListener2);
-                Control.Keyboard.keyDown(key);
-                Control.Keyboard.keyUp(key);
+                Control.Keyboard.keyDown(keyBtn);
+                Control.Keyboard.keyUp(keyBtn);
+                console.log("Sent key:", keyBtn);
                 timeoutId = setTimeout(timeoutFn, 1000);
             });
         };
         const keysToTest = ["a", "b", "c", "A", "B", "C", "1", "2", "3", "!", "@", "#", "Enter", "Escape", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", " "];
-        await testKey("a");
+        await testKey("h");
         await new Promise(resolve => setTimeout(resolve, 1000));
         await testKey("g");
         await new Promise(resolve => setTimeout(resolve, 1000));

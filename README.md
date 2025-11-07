@@ -15,14 +15,14 @@ const absolutePath = "/tmp/dist/easy-control.node"
 const { Mouse, Keyboard,  Controller, Screen } = require(absolutePath);
 
 /*
-    !!! Function calculate with X and Y positions with scaled value !!!
+    !!! Function calculate with X and Y positions logical scaled value (not the native resolution)!!!
 
-    Example: 1920 x 1080 screen with 1.25 (125% scale) >> the sreen size will be 1536 x 864
+    Example: 1920 x 1080 screen with 1.25 (125% scale) >> the sreen size will be 1536 x 864 and right bottom corner coorinates will be X:1536; Y:864
 
 Note:
     - If you want convert normal pixel to scaled just divide by scale e.g. 1920/1.25 = 1536
     - If you want convert scaled pixel to normal just multiply is by scale e.g. 1536*1.25 = 1920
-    - Node.js cannot known the true size of the screen (probably lack of GPU support), it will return 1 scale
+    - Node.js cannot known the true size of the screen (probably lack of GPU support), it will return 1.0 scale
 */
 ```
 
@@ -54,10 +54,17 @@ Mouse.scrollUp(amount=1, isHorizontal=false);   // up or left scroll
 
 ### Keyboard
 ```js
-Keyboard.keyDown(key="");  // key value is a KeyboardEvent "key" property string (https://developer.mozilla.org/en-US/docs/Web/API/UI_Events/Keyboard_event_key_values)
+Keyboard.keyDown(key="");   // key value is a KeyboardEvent "code" property string (https://developer.mozilla.org/en-US/docs/Web/API/UI_Events/Keyboard_event_code_values)
 Keyboard.keyUp(key="");
 
-const isHotkeySupported = Keyboard.isHotkeySupported(key=""); // check if special (non characters) hotkeys is supported.
+const isKeySupported = Keyboard.isKeySupported(key=""); // check if special (non characters) hotkeys is supported.
+
+Keyboard.type(char="");     // Character to type. "keyDown" with "keyUp" methods does with physical keyboard keys but if you want input layout dependent characters like ő,ú,ű on english keyboard, use this.
+
+const layout = Keyboard.GetLayout();    // Get the current layout settings in string
+Keyboard.SetLayout(layout="");  // Set the keyboard language setting, this affect keyDown, keyUp characters, Windows:https://learn.microsoft.com/en-us/windows-hardware/manufacture/desktop/windows-language-pack-default-values?view=windows-11
+
+
 ```
 
 
