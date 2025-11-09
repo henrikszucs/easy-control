@@ -1,14 +1,14 @@
 #include "controller.h"
 
 #include <uv.h>
+#include <stdio.h>
+#include <string.h>
 
 #if defined(IS_WINDOWS)
     #include <windows.h>
 
     #include <setupapi.h>
     #include <shellapi.h>
-    #include <stdio.h>
-    #include <string.h>
     #pragma comment(lib, "setupapi.lib")
     #pragma comment(lib, "shell32.lib")
 
@@ -22,19 +22,15 @@
     #include <sys/stat.h>
     #include <fcntl.h>
     #include <linux/uinput.h>
-    #include <string.h>
 #endif
 
 // Driver installation async implementation
-InstallDriver::InstallDriver(const Napi::Env& env) : Napi::AsyncWorker{env, "InstallDriver"}, m_deferred{env} {
-
-}
+InstallDriver::InstallDriver(const Napi::Env& env) : Napi::AsyncWorker{env, "InstallDriver"}, m_deferred{env} {}
 
 Napi::Promise InstallDriver::GetPromise() {
     return m_deferred.Promise();
 }
 
-// Perform installation steps here
 void InstallDriver::Execute() {
     
     #if defined(IS_WINDOWS)
@@ -160,6 +156,259 @@ void InstallDriver::OnError(const Napi::Error& err) {
 }
 
 
+// EnableGamepad async implementation
+EnableGamepad::EnableGamepad(const Napi::Env& env, uint32_t gamepadId, uint32_t maxButton, uint32_t maxAxis) : Napi::AsyncWorker{env, "EnableGamepad"}, m_deferred{env}, m_gamepadId{gamepadId}, m_maxButton{maxButton}, m_maxAxis{maxAxis} {}
+
+Napi::Promise EnableGamepad::GetPromise() {
+    return m_deferred.Promise();
+}
+
+void EnableGamepad::Execute() {
+    #if defined(IS_WINDOWS)
+        // Get absolute path to vJoyConfig.exe
+        char modulePath[MAX_PATH];
+        HMODULE hModule = NULL;
+        GetModuleHandleExA(
+            GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+            (LPCSTR)GetvJoyVersion,
+            &hModule
+        );
+        GetModuleFileNameA(hModule, modulePath, MAX_PATH);
+        char* lastSlash = strrchr(modulePath, '\\');
+        if (lastSlash != NULL) {
+            *lastSlash = '\0';
+        }
+        
+        // Setup vJoyConfig.exe path
+        char configPath[MAX_PATH];
+        snprintf(configPath, MAX_PATH, "%s\\vJoyConfig.exe", modulePath);
+        
+        // Build command line arguments
+        // Format: vJoyConfig.exe <deviceId> -f -b <numButtons> [-a <axesMask>]
+        // Note: vJoy device IDs are 1-based
+        uint32_t deviceId = m_gamepadId + 1;
+        
+        char parameters[512];
+        
+        if (m_maxAxis > 0 && m_maxAxis <= 8) {
+            // Build axes mask string
+            // Accepted values: x, y, z, rx, ry, rz, sl0, sl1 (space-separated)
+            char axesMask[64] = "";
+            const char* axisNames[] = {"x", "y", "z", "rx", "ry", "rz", "sl0", "sl1"};
+            
+            for (uint32_t i = 0; i < m_maxAxis; i++) {
+                if (i > 0) {
+                    strcat(axesMask, " ");
+                }
+                strcat(axesMask, axisNames[i]);
+            }
+            
+            snprintf(parameters, sizeof(parameters), "%u -f -b %u -a %s", 
+                     deviceId, m_maxButton, axesMask);
+        } else {
+            // No axes - don't include -a parameter
+            snprintf(parameters, sizeof(parameters), "%u -f -b %u", deviceId, m_maxButton);
+        }
+        
+        // Use ShellExecuteEx to run with elevated privileges
+        SHELLEXECUTEINFOA sei = { 0 };
+        sei.cbSize = sizeof(SHELLEXECUTEINFOA);
+        sei.fMask = SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NO_CONSOLE;
+        sei.lpVerb = "runas";  // Run as administrator
+        sei.lpFile = configPath;
+        sei.lpParameters = parameters;
+        sei.nShow = SW_HIDE;
+        
+        if (ShellExecuteExA(&sei)) {
+            if (sei.hProcess != NULL) {
+                // Wait for the process to complete (max 30 seconds)
+                DWORD waitResult = WaitForSingleObject(sei.hProcess, 30000);
+                
+                if (waitResult == WAIT_OBJECT_0) {
+                    // Get exit code
+                    DWORD exitCode = 0;
+                    GetExitCodeProcess(sei.hProcess, &exitCode);
+                    
+                    CloseHandle(sei.hProcess);
+                    
+                    // Exit code 0 means success
+                    if (exitCode == 0) {
+                        // Wait a moment for the device to be ready
+                        Sleep(500);
+                        
+                        // Verify the device is now available
+                        VjdStat status = GetVJDStatus(deviceId);
+                        if (status == VJD_STAT_FREE || status == VJD_STAT_OWN) {
+                            m_result = true;
+                        } else {
+                            m_result = false;
+                        }
+                    } else {
+                        m_result = false;
+                    }
+                } else {
+                    // Timeout or error
+                    CloseHandle(sei.hProcess);
+                    m_result = false;
+                }
+            } else {
+                // No process handle - may happen with runas on some systems
+                // Wait and verify
+                Sleep(5000);
+                VjdStat status = GetVJDStatus(deviceId);
+                if (status == VJD_STAT_FREE || status == VJD_STAT_OWN) {
+                    m_result = true;
+                } else {
+                    m_result = false;
+                }
+            }
+        } else {
+            // ShellExecuteEx failed
+            DWORD error = GetLastError();
+            if (error == ERROR_CANCELLED) {
+                // User cancelled UAC prompt
+                m_result = false;
+            } else {
+                m_result = false;
+            }
+        }
+    #elif defined(IS_MACOS)
+        // Implementation to enable gamepad on macOS
+    #elif defined(IS_LINUX)
+        // Implementation to enable gamepad on Linux
+    #endif
+    m_result = true; // Placeholder
+}
+
+void EnableGamepad::OnOK() {
+    Napi::Boolean val = Napi::Boolean::New(Env(), m_result);
+    m_deferred.Resolve(val);
+}
+
+void EnableGamepad::OnError(const Napi::Error& err) {
+    m_deferred.Reject(err.Value());
+}
+
+
+// DisableGamepad async implementation
+DisableGamepad::DisableGamepad(const Napi::Env& env, uint32_t gamepadId) : Napi::AsyncWorker{env, "DisableGamepad"}, m_deferred{env}, m_gamepadId{gamepadId} {}
+
+Napi::Promise DisableGamepad::GetPromise() {
+    return m_deferred.Promise();
+}
+
+void DisableGamepad::Execute() {
+    #if defined(IS_WINDOWS)
+        // Get absolute path to vJoyConfig.exe
+        char modulePath[MAX_PATH];
+        HMODULE hModule = NULL;
+        GetModuleHandleExA(
+            GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+            (LPCSTR)GetvJoyVersion,
+            &hModule
+        );
+        GetModuleFileNameA(hModule, modulePath, MAX_PATH);
+        char* lastSlash = strrchr(modulePath, '\\');
+        if (lastSlash != NULL) {
+            *lastSlash = '\0';
+        }
+        
+        // Setup vJoyConfig.exe path
+        char configPath[MAX_PATH];
+        snprintf(configPath, MAX_PATH, "%s\\vJoyConfig.exe", modulePath);
+        
+        // Build command line arguments
+        // Format: vJoyConfig.exe <deviceId> -f -b <numButtons> [-a <axesMask>]
+        // Note: vJoy device IDs are 1-based
+        uint32_t deviceId = m_gamepadId + 1;
+        
+        char parameters[512];
+        snprintf(parameters, sizeof(parameters), "-d %u", deviceId);
+        
+        // Use ShellExecuteEx to run with elevated privileges
+        SHELLEXECUTEINFOA sei = { 0 };
+        sei.cbSize = sizeof(SHELLEXECUTEINFOA);
+        sei.fMask = SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NO_CONSOLE;
+        sei.lpVerb = "runas";  // Run as administrator
+        sei.lpFile = configPath;
+        sei.lpParameters = parameters;
+        sei.nShow = SW_HIDE;
+        
+        if (ShellExecuteExA(&sei)) {
+            if (sei.hProcess != NULL) {
+                // Wait for the process to complete (max 30 seconds)
+                DWORD waitResult = WaitForSingleObject(sei.hProcess, 30000);
+                
+                if (waitResult == WAIT_OBJECT_0) {
+                    // Get exit code
+                    DWORD exitCode = 0;
+                    GetExitCodeProcess(sei.hProcess, &exitCode);
+                    
+                    CloseHandle(sei.hProcess);
+                    
+                    // Exit code 0 means success
+                    if (exitCode == 0) {
+                        // Wait a moment for the device to be ready
+                        Sleep(500);
+                        
+                        // Verify the device is now available
+                        VjdStat status = GetVJDStatus(deviceId);
+                        if (status == VJD_STAT_FREE || status == VJD_STAT_OWN) {
+                            m_result = true;
+                        } else {
+                            m_result = false;
+                        }
+                    } else {
+                        m_result = false;
+                    }
+                } else {
+                    // Timeout or error
+                    CloseHandle(sei.hProcess);
+                    m_result = false;
+                }
+            } else {
+                // No process handle - may happen with runas on some systems
+                // Wait and verify
+                Sleep(5000);
+                VjdStat status = GetVJDStatus(deviceId);
+                if (status != VJD_STAT_OWN) {
+                    if (deviceId != 1 && status != VJD_STAT_FREE) {
+                        m_result = false;
+                    } else {
+                        m_result = true;
+                    }
+                    
+                } else {
+                    m_result = false;
+                }
+            }
+        } else {
+            // ShellExecuteEx failed
+            DWORD error = GetLastError();
+            if (error == ERROR_CANCELLED) {
+                // User cancelled UAC prompt
+                m_result = false;
+            } else {
+                m_result = false;
+            }
+        }
+    #elif defined(IS_MACOS)
+        // Implementation to disable gamepad on macOS
+    #elif defined(IS_LINUX)
+        // Implementation to disable gamepad on Linux
+    #endif
+    m_result = true; // Placeholder
+}
+
+void DisableGamepad::OnOK() {
+    Napi::Boolean val = Napi::Boolean::New(Env(), m_result);
+    m_deferred.Resolve(val);
+}
+
+void DisableGamepad::OnError(const Napi::Error& err) {
+    m_deferred.Reject(err.Value());
+}
+
 
 
 Napi::Boolean Controller::isSupported(const Napi::CallbackInfo& info) {
@@ -231,7 +480,6 @@ Napi::Boolean Controller::isSupported(const Napi::CallbackInfo& info) {
     return Napi::Boolean::New(env, supported);
 }
 
-
 Napi::Promise Controller::install(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
 
@@ -240,54 +488,138 @@ Napi::Promise Controller::install(const Napi::CallbackInfo& info) {
     return worker->GetPromise();
 }
 
-
 Napi::Array Controller::list(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
 
     Napi::Array controllers = Napi::Array::New(env);
 
-    for (size_t i = 0; i < Controller::controllers().size(); i++) {
-        controllers.Set(i, Controller::controllers().at(i).Value());
-    }
-
+    #if defined(IS_WINDOWS)
+        
+        for (size_t i = 1; i < 17; i++) {
+            VjdStat gamepadStatus = GetVJDStatus(i);
+            if (gamepadStatus == VJD_STAT_FREE || gamepadStatus == VJD_STAT_OWN) {
+                controllers.Set(controllers.Length(), Napi::Number::New(env, i-1));
+            }
+        }
+    #elif defined(IS_MACOS)
+        // macOS implementation to list available virtual gamepads
+    #elif defined(IS_LINUX)
+        // Linux implementation to list available virtual gamepads
+    #endif
     return controllers;
 }
 
-Napi::Object Controller::create(const Napi::CallbackInfo& info) {
+
+Napi::Value Controller::enable(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
-    Napi::Object new_controller = Controller::NewInstance(env);
-    Controller::controllers().push_back(Napi::Persistent(new_controller));
-    return new_controller;
+
+    // Validate parameters
+    if (info.Length() < 1) {
+        Napi::TypeError::New(env, "gamepadId parameter is required").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (!info[0].IsNumber()) {
+        Napi::TypeError::New(env, "gamepadId must be a number").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    uint32_t gamepadId = info[0].As<Napi::Number>().Uint32Value();
+
+    uint32_t maxButtons = 16; // Default max buttons
+    if (info.Length() >= 2) {
+        if (!info[1].IsNumber()) {
+            Napi::TypeError::New(env, "maxButtons must be a number").ThrowAsJavaScriptException();
+            return env.Undefined();
+        }
+        maxButtons = info[1].As<Napi::Number>().Uint32Value();
+    }
+
+    uint32_t maxAxis = 4; // Default max axis
+    if (info.Length() >= 3) {
+        if (!info[2].IsNumber()) {
+            Napi::TypeError::New(env, "maxAxis must be a number").ThrowAsJavaScriptException();
+            return env.Undefined();
+        }
+        maxAxis = info[2].As<Napi::Number>().Uint32Value();
+    }
+
+    EnableGamepad* worker = new EnableGamepad(env, gamepadId, maxButtons, maxAxis);
+    worker->Queue();
+    return worker->GetPromise();
 }
 
-Napi::Object Controller::NewInstance(Napi::Env env) {
-    Napi::EscapableHandleScope scope(env);
-    Napi::Object obj = env.GetInstanceData<Napi::FunctionReference>()->New({});
-    return scope.Escape(napi_value(obj)).ToObject();
+Napi::Value Controller::disable(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+
+    // Validate parameters
+    if (info.Length() < 1) {
+        Napi::TypeError::New(env, "gamepadId parameter is required").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (!info[0].IsNumber()) {
+        Napi::TypeError::New(env, "gamepadId must be a number").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    uint32_t gamepadId = info[0].As<Napi::Number>().Uint32Value();
+
+    DisableGamepad* worker = new DisableGamepad(env, gamepadId);
+    worker->Queue();
+    return worker->GetPromise();
 }
 
-std::vector<Napi::ObjectReference>& Controller::controllers() {
-    static std::vector<Napi::ObjectReference> m_controllers;
-    return m_controllers;
-}
+void Controller::buttonDown(const Napi::CallbackInfo& info) {
+    // Validate parameters
+    Napi::Env env = info.Env();
 
-Controller::Controller(const Napi::CallbackInfo& info) : Napi::ObjectWrap<Controller>(info) {
-    this->m_id = Controller::controllers().size();
+    if (info.Length() < 2) {
+        Napi::TypeError::New(env, "2 parameter are requires").ThrowAsJavaScriptException();
+        return;
+    }
+    
+    if (!info[0].IsNumber()) {
+        Napi::TypeError::New(env, "Gamepad ID must be a number").ThrowAsJavaScriptException();
+        return;
+    }
+    uint32_t gamepadId = info[0].As<Napi::Number>().Uint32Value();
+
+    if (!info[1].IsNumber()) {
+        Napi::TypeError::New(env, "Button ID must be a number").ThrowAsJavaScriptException();
+        return;
+    }
+    uint32_t buttonId = info[1].As<Napi::Number>().Uint32Value();
+
     
     #if defined(IS_WINDOWS)
-        while (this->m_id < 16 && GetVJDStatus(this->m_id) != VJD_STAT_FREE) {
-            this->m_id++;
-        }
-        if (this->m_id >= 16) {
-            Napi::TypeError::New(info.Env(), "No free virtual controller slots available").ThrowAsJavaScriptException();
+        gamepadId += 1; // vJoy IDs are 1-based
+        // Check vJoy owner
+        VjdStat gamepadStatus = GetVJDStatus(gamepadId);
+        if (gamepadStatus != VJD_STAT_FREE && gamepadStatus != VJD_STAT_OWN) {
+            Napi::TypeError::New(info.Env(), "Controller not available").ThrowAsJavaScriptException();
             return;
         }
-        BOOL isGetted = AcquireVJD(this->m_id);
-        if (!isGetted) {
-            Napi::TypeError::New(info.Env(), "Failed to acquire virtual controller").ThrowAsJavaScriptException();
+
+        // Acquire the vJoy device if not already owned
+        if (gamepadStatus == VJD_STAT_FREE) {
+            BOOL isGetted = AcquireVJD(gamepadId);
+            if (!isGetted) {
+                Napi::TypeError::New(info.Env(), "Failed to acquire virtual controller").ThrowAsJavaScriptException();
+                return;
+            }
+        }
+
+        // Check if button exists on this device
+        uint32_t maxButtons = GetVJDButtonNumber(gamepadId);
+        if (buttonId > maxButtons) {
+            Napi::RangeError::New(env, "Button ID exceeds available buttons on this controller").ThrowAsJavaScriptException();
             return;
         }
-        ResetVJD(this->m_id);
+        
+        // Press the button (TRUE = pressed)
+        BOOL result = SetBtn(TRUE, gamepadId, buttonId);
+        
+        if (!result) {
+            Napi::Error::New(env, "Failed to press button").ThrowAsJavaScriptException();
+            return;
+        }
 
     #elif defined(IS_MACOS)
         // Initialize IOKit HID resources if needed
@@ -295,182 +627,116 @@ Controller::Controller(const Napi::CallbackInfo& info) : Napi::ObjectWrap<Contro
         // Initialize uinput file descriptor if needed
         // TODO: Implement Linux uinput initialization
     #endif
-    
-    this->m_active = true;
-}
-
-Controller::~Controller() {
-    if (!this->m_active) {
-        return;
-    }
-    this->m_active = false;
-
-    #if defined(IS_WINDOWS)
-        RelinquishVJD(this->m_id);
-    #elif defined(IS_MACOS)
-        // Release IOKit resources if any
-        // TODO: Implement macOS cleanup
-    #elif defined(IS_LINUX)
-        // Close uinput file descriptor if open
-        // TODO: Implement Linux cleanup
-    #endif
-    
-    // Remove from controllers list
-    auto& controllers = Controller::controllers();
-    for (size_t i = 0; i < controllers.size(); i++) {
-        Napi::Object obj = controllers[i].Value();
-        Controller* ctrl = Controller::Unwrap(obj);
-        if (ctrl == this) {
-            controllers.erase(controllers.begin() + i);
-            break;
-        }
-    }
-}
-
-
-Napi::Value Controller::isActive(const Napi::CallbackInfo& info) {
-    Napi::Env env = info.Env();
-    return Napi::Boolean::New(env, this->m_active);
-}
-
-void Controller::buttonDown(const Napi::CallbackInfo& info) {
-    if (!this->m_active) {
-        return;
-    }
-
-    Napi::Env env = info.Env();
-    
-    // Validate parameters
-    if (info.Length() < 1) {
-        Napi::TypeError::New(env, "Button ID is required").ThrowAsJavaScriptException();
-        return;
-    }
-    
-    if (!info[0].IsNumber()) {
-        Napi::TypeError::New(env, "Button ID must be a number").ThrowAsJavaScriptException();
-        return;
-    }
-
-
-    #if defined(IS_WINDOWS)
-        int buttonId = info[0].As<Napi::Number>().Int32Value();
-        
-        // Validate button ID (vJoy supports buttons 1-128)
-        if (buttonId < 1 || buttonId > 128) {
-            Napi::RangeError::New(env, "Button ID must be between 1 and 128").ThrowAsJavaScriptException();
-            return;
-        }
-        
-        // Check if button exists on this device
-        int maxButtons = GetVJDButtonNumber(this->m_id);
-        if (buttonId > maxButtons) {
-            Napi::RangeError::New(env, "Button ID exceeds available buttons on this controller").ThrowAsJavaScriptException();
-            return;
-        }
-        
-        // Press the button (TRUE = pressed)
-        BOOL result = SetBtn(TRUE, this->m_id, buttonId);
-        
-        if (!result) {
-            Napi::Error::New(env, "Failed to press button").ThrowAsJavaScriptException();
-            return;
-        }
-
-    #elif defined(IS_MACOS)
-
-    #elif defined(IS_LINUX)
-
-    #endif
 }
 
 void Controller::buttonUp(const Napi::CallbackInfo& info) {
-    if (!this->m_active) {
-        return;
-    }
-
-    Napi::Env env = info.Env();
-    
     // Validate parameters
-    if (info.Length() < 1) {
-        Napi::TypeError::New(env, "Button ID is required").ThrowAsJavaScriptException();
+    Napi::Env env = info.Env();
+
+    if (info.Length() < 2) {
+        Napi::TypeError::New(env, "2 parameter are requires").ThrowAsJavaScriptException();
         return;
     }
     
     if (!info[0].IsNumber()) {
+        Napi::TypeError::New(env, "Gamepad ID must be a number").ThrowAsJavaScriptException();
+        return;
+    }
+    uint32_t gamepadId = info[0].As<Napi::Number>().Uint32Value();
+
+    if (!info[1].IsNumber()) {
         Napi::TypeError::New(env, "Button ID must be a number").ThrowAsJavaScriptException();
         return;
     }
+    uint32_t buttonId = info[1].As<Napi::Number>().Uint32Value();
 
-
+    
     #if defined(IS_WINDOWS)
-        int buttonId = info[0].As<Napi::Number>().Int32Value();
-        
-        // Validate button ID (vJoy supports buttons 1-128)
-        if (buttonId < 1 || buttonId > 128) {
-            Napi::RangeError::New(env, "Button ID must be between 1 and 128").ThrowAsJavaScriptException();
+        gamepadId += 1; // vJoy IDs are 1-based
+        // Check vJoy owner
+        VjdStat gamepadStatus = GetVJDStatus(gamepadId);
+        if (gamepadStatus != VJD_STAT_FREE && gamepadStatus != VJD_STAT_OWN) {
+            Napi::TypeError::New(info.Env(), "Controller not available").ThrowAsJavaScriptException();
             return;
         }
-        
+
+        // Acquire the vJoy device if not already owned
+        if (gamepadStatus == VJD_STAT_FREE) {
+            BOOL isGetted = AcquireVJD(gamepadId);
+            if (!isGetted) {
+                Napi::TypeError::New(info.Env(), "Failed to acquire virtual controller").ThrowAsJavaScriptException();
+                return;
+            }
+        }
+
         // Check if button exists on this device
-        int maxButtons = GetVJDButtonNumber(this->m_id);
+        uint32_t maxButtons = GetVJDButtonNumber(gamepadId);
         if (buttonId > maxButtons) {
             Napi::RangeError::New(env, "Button ID exceeds available buttons on this controller").ThrowAsJavaScriptException();
             return;
         }
         
         // Press the button (FALSE = released)
-        BOOL result = SetBtn(FALSE, this->m_id, buttonId);
+        BOOL result = SetBtn(FALSE, gamepadId, buttonId);
         
         if (!result) {
-            Napi::Error::New(env, "Failed to press button").ThrowAsJavaScriptException();
+            Napi::Error::New(env, "Failed to release button").ThrowAsJavaScriptException();
             return;
         }
 
     #elif defined(IS_MACOS)
-
+        // Initialize IOKit HID resources if needed
     #elif defined(IS_LINUX)
-
+        // Initialize uinput file descriptor if needed
+        // TODO: Implement Linux uinput initialization
     #endif
 }
-    
 
 void Controller::setAxis(const Napi::CallbackInfo& info) {
-    if (!this->m_active) {
-        return;
-    }
-
-    Napi::Env env = info.Env();
-    
     // Validate parameters
-    if (info.Length() < 2) {
-        Napi::TypeError::New(env, "Axis ID and value are required").ThrowAsJavaScriptException();
+    Napi::Env env = info.Env();
+
+    if (info.Length() < 3) {
+        Napi::TypeError::New(env, "3 parameter are requires").ThrowAsJavaScriptException();
         return;
     }
     
     if (!info[0].IsNumber()) {
+        Napi::TypeError::New(env, "Gamepad ID must be a number").ThrowAsJavaScriptException();
+        return;
+    }
+    uint32_t gamepadId = info[0].As<Napi::Number>().Uint32Value();
+
+    if (!info[1].IsNumber()) {
         Napi::TypeError::New(env, "Axis ID must be a number").ThrowAsJavaScriptException();
         return;
     }
-    
-    if (!info[1].IsNumber()) {
+    uint32_t axisId = info[1].As<Napi::Number>().Uint32Value();
+
+    if (!info[2].IsNumber()) {
         Napi::TypeError::New(env, "Axis value must be a number").ThrowAsJavaScriptException();
         return;
     }
+    double axisValue = info[2].As<Napi::Number>().DoubleValue();
 
     #if defined(IS_WINDOWS)
-        int axisId = info[0].As<Napi::Number>().Int32Value();
-        double axisValue = info[1].As<Napi::Number>().DoubleValue();
-        
-        // Validate axis value (0.0 to 1.0, where 0.5 is center)
-        if (axisValue < 0.0 || axisValue > 1.0) {
-            Napi::RangeError::New(env, "Axis value must be between 0.0 and 1.0").ThrowAsJavaScriptException();
+        gamepadId += 1; // vJoy IDs are 1-based
+        // Check vJoy owner
+        VjdStat gamepadStatus = GetVJDStatus(gamepadId);
+        if (gamepadStatus != VJD_STAT_FREE && gamepadStatus != VJD_STAT_OWN) {
+            Napi::TypeError::New(info.Env(), "Controller not available").ThrowAsJavaScriptException();
             return;
         }
-        
-        // Convert normalized value (0.0-1.0) to vJoy range (0x1-0x8000)
-        // vJoy uses range 0x1 (1) to 0x8000 (32768)
-        LONG vJoyValue = (LONG)(axisValue * 0x7FFF) + 0x1;
-        
+
+        // Acquire the vJoy device if not already owned
+        if (gamepadStatus == VJD_STAT_FREE) {
+            BOOL isGetted = AcquireVJD(gamepadId);
+            if (!isGetted) {
+                Napi::TypeError::New(info.Env(), "Failed to acquire virtual controller").ThrowAsJavaScriptException();
+                return;
+            }
+        }
+
         // Map axis ID to vJoy HID usage
         UINT vJoyAxis;
         switch (axisId) {
@@ -488,57 +754,41 @@ void Controller::setAxis(const Napi::CallbackInfo& info) {
         }
         
         // Check if axis exists on this device
-        if (!GetVJDAxisExist(this->m_id, vJoyAxis)) {
+        if (!GetVJDAxisExist(gamepadId, vJoyAxis)) {
             Napi::Error::New(env, "Axis does not exist on this controller").ThrowAsJavaScriptException();
             return;
         }
         
         // Set the axis value
-        BOOL result = SetAxis(vJoyValue, this->m_id, vJoyAxis);
+        // Convert normalized value (0.0-1.0) to vJoy range (0x1-0x8000)
+        LONG vJoyValue = (LONG)(axisValue * 0x7FFF) + 0x1;
+        
+        BOOL result = SetAxis(vJoyValue, gamepadId, vJoyAxis);
         
         if (!result) {
             Napi::Error::New(env, "Failed to set axis value").ThrowAsJavaScriptException();
             return;
         }
-
     #elif defined(IS_MACOS)
-
+        
     #elif defined(IS_LINUX)
 
     #endif
-}
 
-void Controller::disconnect(const Napi::CallbackInfo& info) {
-    // Call destructor
-    this->~Controller();
 }
 
 
 Napi::Object Controller::Init(Napi::Env env, Napi::Object exports) {
     Napi::Object obj = Napi::Object::New(env);
 
-    // static functions
     obj.Set(Napi::String::New(env, "isSupported"), Napi::Function::New(env, Controller::isSupported));
     obj.Set(Napi::String::New(env, "install"), Napi::Function::New(env, Controller::install));
     obj.Set(Napi::String::New(env, "list"), Napi::Function::New(env, Controller::list));
-
-    // instance creation functions
-    Napi::Object new_exports = Napi::Function::New(env, Controller::create, "create");
-    Napi::Function func = DefineClass(env,
-        "Controller",
-        {
-            InstanceMethod("isActive", &Controller::isActive),
-            InstanceMethod("buttonDown", &Controller::buttonDown),
-            InstanceMethod("buttonUp", &Controller::buttonUp),
-            InstanceMethod("setAxis", &Controller::setAxis),
-            InstanceMethod("disconnect", &Controller::disconnect)
-        }
-    );
-    Napi::FunctionReference* constructor = new Napi::FunctionReference();
-    *constructor = Napi::Persistent(func);
-    env.SetInstanceData(constructor);
-    new_exports.Set("Controller", func);
-    obj.Set(Napi::String::New(env, "create"), new_exports);
-
+    obj.Set(Napi::String::New(env, "enable"), Napi::Function::New(env, Controller::enable));
+    obj.Set(Napi::String::New(env, "disable"), Napi::Function::New(env, Controller::disable));
+    obj.Set(Napi::String::New(env, "buttonDown"), Napi::Function::New(env, Controller::buttonDown));
+    obj.Set(Napi::String::New(env, "buttonUp"), Napi::Function::New(env, Controller::buttonUp));
+    obj.Set(Napi::String::New(env, "setAxis"), Napi::Function::New(env, Controller::setAxis));
+   
     return obj;
 }

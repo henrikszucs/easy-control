@@ -73,8 +73,23 @@ const build = async () => {
 
             "./src/vjoy_driver/lib/x64/vJoyInstall.dll", "./dist/" + os.platform() + "-" + os.arch() + "/vJoyInstall.dll",
             "./src/vjoy_driver/lib/x64/vJoyInterface.dll", "./dist/" + os.platform() + "-" + os.arch() + "/vJoyInterface.dll",
-            "./src/vjoy_driver/lib/x64/vJoyInterface.lib", "./dist/" + os.platform() + "-" + os.arch() + "/vJoyInterface.lib"
+            "./src/vjoy_driver/lib/x64/vJoyInterface.lib", "./dist/" + os.platform() + "-" + os.arch() + "/vJoyInterface.lib",
+
         ];
+        // add lib files to copy
+        const distSrc = "./src/vjoy_driver/lib/x64/";
+        const distDest = "./dist/" + os.platform() + "-" + os.arch();
+        const distFiles = await fs.readdir(distSrc, {"recursive": true});
+        for (const file of distFiles) {
+            const fileSrc = path.join(distSrc, file);
+            const fileDest = path.join(distDest, file);
+            const isDir = (await fs.stat(fileSrc)).isDirectory();
+            if (isDir === false) {
+                deps.push(fileSrc);
+                deps.push(fileDest);
+            }
+        }
+
         for (let i = 0; i < deps.length; i += 2) {
             await fs.cp(deps[i], deps[i + 1]), { "recursive": true };
         }

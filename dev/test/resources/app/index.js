@@ -3,7 +3,6 @@
 const path = require("node:path");
 const os = require("node:os");
 const { ipcRenderer } = require("electron");
-const { log } = require("node:console");
 
 ipcRenderer.on("api", function(event, ...args) {
     console.log(args[1]);
@@ -17,13 +16,8 @@ const main = async function() {
     globalThis.Control = require(packagePath);
     console.log(Control);
 
-    window.addEventListener("keydown", function(event) {
-        console.log("Key down event (window listener):", event.key);
-    });
-    window.addEventListener("keyup", function(event) {
-        console.log("Key up event (window listener):", event.key);
-    });
-    /*
+    
+    /*d
     setTimeout( function() {Control.Keyboard.keyDown("a");Control.Keyboard.keyUp("a");}, 1000);
     */
 
@@ -203,62 +197,88 @@ const main = async function() {
         }
 
         logElem.innerHTML += "<li style='color:green'>Mouse API test passed.</li>";
-*/
+
 
         //test Keyboard API
-        const testKey = async function(keyBtn) {
-            return new Promise((resolve, reject) => {
-                let timeoutId = -1;
-                const timeoutFn = () => {
-                    clearTimeout(timeoutId);
-                    window.removeEventListener("keydown", keyListener);
-                    window.removeEventListener("keyup", keyListener2);
-                    reject(new Error("Keydown timeout!"));
-                };
+        let onKeyDown = [];
+        let onKeyUp = [];
+        window.addEventListener("keydown", function(event) {
+            for (const fn of onKeyDown) {
+                fn?.(event.code);
+            }
+        });
+        window.addEventListener("keyup", function(event) {
+            for (const fn of onKeyUp) {
+                fn?.(event.code);
+            }
+        });
+        const testKeyFn = (codeTarget) => {
+            const testKey = async () => {
+                return new Promise(async (resolve, reject) => {
+                    const keyBtn = codeTarget;
+                    const slowTime = 300;
+                    let timeoutId = -1;
+                    const timeoutFn = () => {
+                        reject(new Error("Keydown timeout!"));
+                    };
 
-                let isDown = false;
-                const keyListener = (event) => {
-                    console.log("Key down event:", event.key);
-                    if (event.key === keyBtn) {
-                        window.removeEventListener("keydown", keyListener);
-                        isDown = true;
-                    }
-                };
-                const keyListener2 = (event) => {
-                    clearTimeout(timeoutId);
-                    window.removeEventListener("keyup", keyListener2);
-                    console.log("Key up event:", event.key);
-                    if (event.key !== keyBtn) {
-                        console.log("Expected key:", keyBtn, "; Received key:", event.key);
-                        reject(new Error("Received key does not match!"));
-                        return;
-                    }
-                    
-                    if (!isDown) {
-                        reject(new Error("Key was not registered as down!"));
-                        return;
-                    }
-                    console.log("Expected key:", keyBtn, "; Received key:", event.key);
-                    resolve(true);
-                };
-                window.addEventListener("keydown", keyListener);
-                window.addEventListener("keyup", keyListener2);
-                Control.Keyboard.keyDown(keyBtn);
-                Control.Keyboard.keyUp(keyBtn);
-                console.log("Sent key:", keyBtn);
-                timeoutId = setTimeout(timeoutFn, 1000);
-            });
+                    let isDown = false;
+                    onKeyDown.push((code) => {
+                        console.log("Key down event:", code);
+                        if (code === keyBtn) {
+                            isDown = true;
+                        }
+                    });
+
+                    onKeyUp.push(async (code) => {
+                        console.log("Key up event:", code);
+                        if (code !== keyBtn) {
+                            //console.error("Expected key:", keyBtn, "; Received key:", code);
+                            //reject(new Error("Received key does not match!"));
+                            return;
+                        }
+
+                        clearTimeout(timeoutId);
+                        if (!isDown) {
+                            reject(new Error("Key was not registered as down!"));
+                            return;
+                        }
+                        console.log("Expected key:", keyBtn, "; Received key:", code);
+                        resolve(true);
+                    });
+                    console.log("Down:", keyBtn);
+                    Control.Keyboard.keyDown(keyBtn);
+                    console.log("Up:", keyBtn);
+                    Control.Keyboard.keyUp(keyBtn);
+                    timeoutId = setTimeout(timeoutFn, slowTime * 4);
+                });
+            };
+            return testKey;
         };
-        const keysToTest = ["a", "b", "c", "A", "B", "C", "1", "2", "3", "!", "@", "#", "Enter", "Escape", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", " "];
-        await testKey("h");
-        await new Promise(resolve => setTimeout(resolve, 1000));
-        await testKey("g");
-        await new Promise(resolve => setTimeout(resolve, 1000));
-        
+        const keysToTest = ["KeyA", "KeyB", "KeyC", "KeyD", "KeyE", "KeyF", "KeyG", "KeyH", "KeyI", "KeyJ", "KeyK", "KeyL", "KeyM", "KeyN", "KeyO", "KeyP", "KeyQ", "KeyR", "KeyS", "KeyT", "KeyU", "KeyV", "KeyW", "KeyX", "KeyY", "KeyZ", "Digit0", "Digit1", "Digit2", "Digit3", "Digit4", "Digit5", "Digit6", "Digit7", "Digit8", "Digit9", "Escape", "Backspace"];
+        const testFns = [];
+        for (let i = 0; i < keysToTest.length; i++) {
+            testFns.push(testKeyFn(keysToTest[i]));
+        }
+        for await (const test of testFns) {
+            await test();
+        }
         logElem.innerHTML += "<li style='color:green'>Keyboard API test passed.</li>";
-
+*/
         //test Controller API
-        
+        window.addEventListener("gamepadconnected", (e) => {
+            console.log(
+                "Gamepad connected at index %d: %s. %d buttons, %d axes.",
+                e.gamepad.index,
+                e.gamepad.id,
+                e.gamepad.buttons.length,
+                e.gamepad.axes.length,
+            );
+        });
+        const controller = Control.Controller.create();
+
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        controller.disconnect();
 
 
     });

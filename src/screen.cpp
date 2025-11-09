@@ -1,8 +1,9 @@
 #include "screen.h"
 
+#include <vector>
+
 #if defined(IS_WINDOWS)
     #include <shellscalingapi.h>
-    #include <vector>
     #pragma comment(lib, "Shcore.lib")
 #elif defined(IS_MACOS)
     #include <ApplicationServices/ApplicationServices.h>

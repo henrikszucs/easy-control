@@ -37,6 +37,7 @@ const main = async () => {
     console.log(controller);
     console.log(Control.Controller.list());
     */
+   /*
     console.log("Keyboard test");
     await new Promise((resolve) => setTimeout(resolve, 200));
     Control.Keyboard.keyDown("a");
@@ -47,6 +48,17 @@ const main = async () => {
     Control.Keyboard.keyUp("ő");
     await new Promise((resolve) => setTimeout(resolve, 200));
     Control.Keyboard.keyDown("Meta");
-    Control.Keyboard.keyUp("Meta");
+    Control.Keyboard.keyUp("Meta");*/
+
+    console.log(Control.Controller.list());
+    console.log(Control.Controller.isSupported());
+    if (!Control.Controller.isSupported()) {
+        console.log(await Control.Controller.install());
+    }
+
+    await Control.Controller.enable(2);
+
+    await Control.Controller.disable(2);
+   
 };
 main();

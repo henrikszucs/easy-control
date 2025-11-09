@@ -1,11 +1,7 @@
 #include "keyboard.h"
 
 #if defined(IS_WINDOWS)
-    #define STRICT
-    #define WIN32_LEAN_AND_MEAN
     #include <windows.h>
-    #include <cctype>  // for toupper
-    #include <fcntl.h>
 #elif defined(IS_MACOS)
     #include <ApplicationServices/ApplicationServices.h>
     #include <Carbon/Carbon.h>
@@ -130,14 +126,14 @@ std::map<std::string, WORD> SpecialKeys = {
     {"Lang1", 0x0072},
     {"IntlRo", 0x0073},
     {"F24", 0x0076},
-    {"Lang4", 0x0077}
+    {"Lang4", 0x0077},
     {"Lang3", 0x0078},
     {"Convert", 0x0079},
     {"NonConvert", 0x007B},
     {"IntlYen", 0x007D},
     {"NumpadComma", 0x007E},
     {"Unod", 0xE008},
-    {"Paste", 0xE00A}
+    {"Paste", 0xE00A},
     {"MediaTrackPrevious", 0xE010},
     {"Cut", 0xE017},
     {"Copy", 0xE018},
@@ -152,7 +148,7 @@ std::map<std::string, WORD> SpecialKeys = {
     {"VolumeDown", 0xE02E},
     {"AudioVolumeDown", 0xE02E},
     {"VolumeUp", 0xE030},
-    {"AudioVolumeUp", 0xE030}
+    {"AudioVolumeUp", 0xE030},
     {"BrowserHome", 0xE032},
     {"NumpadDivide", 0xE035},
     {"PrintScreen", 0xE037},

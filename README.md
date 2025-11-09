@@ -54,10 +54,11 @@ Mouse.scrollUp(amount=1, isHorizontal=false);   // up or left scroll
 
 ### Keyboard
 ```js
+
+const isKeySupported = Keyboard.isKeySupported(key=""); // check if special key is supported.
+
 Keyboard.keyDown(key="");   // key value is a KeyboardEvent "code" property string (https://developer.mozilla.org/en-US/docs/Web/API/UI_Events/Keyboard_event_code_values)
 Keyboard.keyUp(key="");
-
-const isKeySupported = Keyboard.isKeySupported(key=""); // check if special (non characters) hotkeys is supported.
 
 Keyboard.type(char="");     // Character to type. "keyDown" with "keyUp" methods does with physical keyboard keys but if you want input layout dependent characters like ő,ú,ű on english keyboard, use this.
 
@@ -74,12 +75,14 @@ const isSupported = Controller.isSupported();
 
 const isSuccess = await Controller.install();
 
-const contollers = Controller.list();
+const contollers = Controller.list(); // return gamepadIds in array e.g. [0,1,3,6]
 
-const controller1 = Controller.create();
+const isSuccess = await Controller.enable(gamepadId=0, maxButtons=8, maxAxis=4);
+Controller.disable(gamepadId=0);
 
-const isActive = controller1.isActive(); // true or undefined if disconnected
-
+Controller.buttonDown(gamepadId=0, btn=0);
+Controller.buttonUp(gamepadId=0, btn=0);
+Controller.setAxis(gamepadId=0, axis=0, direction=0);
 
 /*
 btn - number from 0 to 32
@@ -111,11 +114,7 @@ Example for standard Xbox360 controller corresponding values:
     axis=3 - right stick vertical direction: from -1 up to 1 down
 
 */
-controller1.buttonDown(btn=0);
-controller1.buttonUp(btn=0);
-controller1.setAxis(axis=0, direction=0);
 
-controller1.disconnect();
 
 
 ```
