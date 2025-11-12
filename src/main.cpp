@@ -36,7 +36,7 @@
 // Include modules
 #include "mouse.h"
 #include "keyboard.h"
-#include "controller.h"
+#include "gamepad.h"
 #include "screen.h"
 
 
@@ -44,7 +44,7 @@ Napi::Object InitAll(Napi::Env env, Napi::Object exports) {
     Napi::Object obj = Napi::Object::New(env);
     obj.Set(Napi::String::New(env, "Mouse"), Mouse::Init(env, exports));
     obj.Set(Napi::String::New(env, "Keyboard"), Keyboard::Init(env, exports));
-    obj.Set(Napi::String::New(env, "Controller"), Controller::Init(env, exports));
+    obj.Set(Napi::String::New(env, "Gamepad"), Gamepad::Init(env, exports));
     obj.Set(Napi::String::New(env, "Screen"), Screen::Init(env, exports));
 
     return obj;

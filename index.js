@@ -62,34 +62,9 @@ const build = async () => {
     if (os.platform() === "win32") {
         await fs.copyFile("./build/Release/easy-control.node", "./dist/" + os.platform() + "-" + os.arch() + "/easy-control.node");
         const deps = [
-            "./src/vjoy_driver/hidkmdf.sys", "./dist/" + os.platform() + "-" + os.arch() + "/vjoy_driver/hidkmdf.sys",
-            "./src/vjoy_driver/unins000.dat", "./dist/" + os.platform() + "-" + os.arch() + "/vjoy_driver/unins000.dat",
-            "./src/vjoy_driver/unins000.exe", "./dist/" + os.platform() + "-" + os.arch() + "/vjoy_driver/unins000.exe",
-            "./src/vjoy_driver/vjoy.cat", "./dist/" + os.platform() + "-" + os.arch() + "/vjoy_driver/vjoy.cat",
-            "./src/vjoy_driver/vjoy.inf", "./dist/" + os.platform() + "-" + os.arch() + "/vjoy_driver/vjoy.inf",
-            "./src/vjoy_driver/vJoy.sys", "./dist/" + os.platform() + "-" + os.arch() + "/vjoy_driver/vJoy.sys",
-            "./src/vjoy_driver/vJoyInstall.exe", "./dist/" + os.platform() + "-" + os.arch() + "/vjoy_driver/vJoyInstall.exe",
-            "./src/vjoy_driver/WdfCoinstaller01009.dll", "./dist/" + os.platform() + "-" + os.arch() + "/WdfCoinstaller01009.dll",
-
-            "./src/vjoy_driver/lib/x64/vJoyInstall.dll", "./dist/" + os.platform() + "-" + os.arch() + "/vJoyInstall.dll",
-            "./src/vjoy_driver/lib/x64/vJoyInterface.dll", "./dist/" + os.platform() + "-" + os.arch() + "/vJoyInterface.dll",
-            "./src/vjoy_driver/lib/x64/vJoyInterface.lib", "./dist/" + os.platform() + "-" + os.arch() + "/vJoyInterface.lib",
-
+            "./src/inc/ViGEm/lib/ViGEmClient.dll", "./dist/" + os.platform() + "-" + os.arch() + "/ViGEmClient.dll",
+            "./src/inc/ViGEm/lib/ViGEmClient.lib", "./dist/" + os.platform() + "-" + os.arch() + "/ViGEmClient.lib"
         ];
-        // add lib files to copy
-        const distSrc = "./src/vjoy_driver/lib/x64/";
-        const distDest = "./dist/" + os.platform() + "-" + os.arch();
-        const distFiles = await fs.readdir(distSrc, {"recursive": true});
-        for (const file of distFiles) {
-            const fileSrc = path.join(distSrc, file);
-            const fileDest = path.join(distDest, file);
-            const isDir = (await fs.stat(fileSrc)).isDirectory();
-            if (isDir === false) {
-                deps.push(fileSrc);
-                deps.push(fileDest);
-            }
-        }
-
         for (let i = 0; i < deps.length; i += 2) {
             await fs.cp(deps[i], deps[i + 1]), { "recursive": true };
         }

@@ -1,5 +1,5 @@
 # easy-control
-Simple and easy to use node.js module to handle mouse, keyboard and controller input for Windows, MacOS and Linux.
+Simple and easy to use node.js module to handle mouse, keyboard and gamepad input for Windows, MacOS and Linux.
 
 
 
@@ -7,12 +7,12 @@ Simple and easy to use node.js module to handle mouse, keyboard and controller i
 
 ```js
 // Module import
-import { Mouse, Keyboard,  Controller, Screen } from "./dist/easy-control.mjs";
+import { Mouse, Keyboard,  Gamepad, Screen } from "./dist/easy-control.mjs";
 // CommonJS import
-const { Mouse, Keyboard,  Controller, Screen } = require("./dist/easy-control.cjs");
+const { Mouse, Keyboard,  Gamepad, Screen } = require("./dist/easy-control.cjs");
 // Electron import example (need OS absolute route to .node file)
 const absolutePath = "/tmp/dist/easy-control.node"
-const { Mouse, Keyboard,  Controller, Screen } = require(absolutePath);
+const { Mouse, Keyboard, Gamepad, Screen } = require(absolutePath);
 
 /*
     !!! Function calculate with X and Y positions logical scaled value (not the native resolution)!!!
@@ -69,20 +69,23 @@ Keyboard.SetLayout(layout="");  // Set the keyboard language setting, this affec
 ```
 
 
-### Controller
+### Gamepad
 ```js
-const isSupported = Controller.isSupported();
+/*
+On Windows for gamepad support need the latest ViGEm Bus Driver (https://vigembusdriver.com/download/)
+*/
 
-const isSuccess = await Controller.install();
 
-const contollers = Controller.list(); // return gamepadIds in array e.g. [0,1,3,6]
+const gamepads = Gamepad.list(); // return gamepad objects in array
 
-const isSuccess = await Controller.enable(gamepadId=0, maxButtons=8, maxAxis=4);
-Controller.disable(gamepadId=0);
+const gamepad1 = await Gamepad.create();
+gamepad1.isActive();
 
-Controller.buttonDown(gamepadId=0, btn=0);
-Controller.buttonUp(gamepadId=0, btn=0);
-Controller.setAxis(gamepadId=0, axis=0, direction=0);
+gamepad1.buttonDown(btn=0);
+gamepad1.buttonUp(btn=0);
+gamepad1.setAxis(axis=0, direction=0);
+
+gamepad1.destroy();
 
 /*
 btn - number from 0 to 32

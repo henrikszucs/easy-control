@@ -9,7 +9,7 @@
             "src/main.cpp",
             "src/mouse.cpp",
             "src/keyboard.cpp",
-            "src/controller.cpp",
+            "src/gamepad.cpp",
             "src/screen.cpp",
         ],
         "cflags": [
@@ -25,9 +25,13 @@
                 {
                     "defines": ["IS_WINDOWS"],
                     "include_dirs": [
-                        "<(module_root_dir)/src/vjoy_driver/inc"
+                        "<(module_root_dir)/src/vjoy_driver/inc",
+                        "<(module_root_dir)/src/inc/"
                     ],
                     "libraries": [
+                        "setupapi.lib",
+                        "shell32.lib",
+                        "<(module_root_dir)/src/inc/ViGEm/lib/ViGEmClient.lib",
                         "<(module_root_dir)/src/vjoy_driver/lib/x64/vJoyInterface.lib"
                     ]
                 }

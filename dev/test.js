@@ -50,15 +50,38 @@ const main = async () => {
     Control.Keyboard.keyDown("Meta");
     Control.Keyboard.keyUp("Meta");*/
 
-    console.log(Control.Controller.list());
-    console.log(Control.Controller.isSupported());
-    if (!Control.Controller.isSupported()) {
-        console.log(await Control.Controller.install());
+    console.log(Control.Gamepad);
+
+    const gamepad1 = Control.Gamepad.create();
+    console.log(gamepad1);
+    console.log(gamepad1.isActive());
+    console.log(Control.Gamepad.list());
+/*
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+    for (let i = 0; i < 17; i++) {
+        if (i === 6 || i === 7) {
+            continue
+        }
+        console.log("Starting gamepad input simulation");
+        gamepad1.buttonDown(i);
+        await new Promise((resolve) => setTimeout(resolve, 400));
+        gamepad1.buttonUp(i);
+        await new Promise((resolve) => setTimeout(resolve, 400));
+    }
+    */
+
+
+    const vals = [-1, -0.7, -0.5, -0.3, 0, 0.3, 0.5, 0.7, 1]; 
+    for (let i = 0; i < 4; i++) {
+        for (let axis = 1; axis < vals.length; axis++) {
+            gamepad1.setAxis(i, vals[axis]);
+            await new Promise((resolve) => setTimeout(resolve, 2000));
+        }
     }
 
-    await Control.Controller.enable(2);
-
-    await Control.Controller.disable(2);
-   
+    console.log(gamepad1.destroy());
+    console.log(Control.Gamepad.list());
+    console.log(gamepad1.isActive());
+    console.log(Control.Gamepad.list());
 };
 main();

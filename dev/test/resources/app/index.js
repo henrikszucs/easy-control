@@ -24,7 +24,7 @@ const main = async function() {
     document.getElementById("start-btn").addEventListener("click", async function() {
         const logElem = document.getElementById("log");
         logElem.innerHTML = "";
-/*
+
         // place Window
         ipcRenderer.send("api", "set-primary-monitor");
         ipcRenderer.send("api", "maximize-window");
@@ -264,9 +264,81 @@ const main = async function() {
             await test();
         }
         logElem.innerHTML += "<li style='color:green'>Keyboard API test passed.</li>";
-*/
+
         //test Controller API
-        window.addEventListener("gamepadconnected", (e) => {
+        const gamepad = Control.Gamepad.create();
+
+        console.log("Listing gamepads...");
+        const controller = Control.Gamepad.list();
+        console.log("Gamepads:", controller);
+        if (controller.length === 0) {
+            logElem.innerHTML += "<li style='color:orange'>No gamepads detected. Connect a gamepad and try again.</li>";
+            return;
+        }
+
+        
+        console.log("Created gamepad:", gamepad);
+        console.log("Waiting 3 seconds for gamepad to be recognized by the system...");
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        
+        await new Promise(resolve => setTimeout(resolve, 500));
+        gamepad.buttonDown(0);
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        gamepad.buttonUp(0);
+
+        const testBtn = async function(gamepad, btnId, isPress=false) {
+            if (isPress) {
+                gamepad.buttonDown(btnId);
+            } else {
+                gamepad.buttonUp(btnId);
+            }
+            await new Promise(resolve => setTimeout(resolve, 200));
+            const gp = navigator.getGamepads()[0];
+            if (gp.buttons[btnId].pressed !== isPress) {
+                console.log("Expected button " + btnId + " to be " + (isPress ? "pressed" : "released") + ", but got " + (gp.buttons[btnId].pressed ? "pressed" : "released"));
+                throw new Error("Gamepad button state mismatch for button " + btnId + "!");
+            }
+            console.log("Gamepad button " + btnId + " state correct:", gp.buttons[btnId].pressed);
+        };
+        console.log(navigator.getGamepads());
+        const btnNum = 17;
+        for (let i = 0; i < 20; i++) {
+            const btnId = Math.floor(Math.random() * btnNum);
+            const isPress = Math.random() >= 0.5;
+            if (btnId === 6 || btnId === 7) {
+                continue;
+            }
+            await testBtn(gamepad, btnId, isPress);
+        }
+
+        
+        const testAxis = async function(gamepad, axisId, value) {
+            gamepad.setAxis(axisId, value);
+            await new Promise(resolve => setTimeout(resolve, 250));
+            const gp = navigator.getGamepads()[0];
+            console.log(gp.axes);
+            const axisVal = gp.axes[axisId];
+            console.log("Gamepad axis " + value + " value correct:", axisVal);
+            if (Math.abs((axisVal+1) - (value+1)) > 0.3) {
+                throw new Error("Gamepad axis value mismatch for axis " + axisId + "!");
+            }
+            console.log("Gamepad axis " + axisId + " value correct:", axisVal);
+        };
+
+        const vals = [-1, -0.7, -0.5, -0.3, 0, 0.3, 0.5, 0.7, 1]; 
+        for (let i = 0; i < 4; i++) {
+            for (let axis = 1; axis < vals.length; axis++) {
+                await testAxis(gamepad, i, vals[axis]);
+                await new Promise((resolve) => setTimeout(resolve, 250));
+            }
+        }
+        gamepad.destroy();
+        logElem.innerHTML += "<li style='color:green'>Gamepad API test passed.</li>";
+    });
+
+};
+main();
+window.addEventListener("gamepadconnected", (e) => {
             console.log(
                 "Gamepad connected at index %d: %s. %d buttons, %d axes.",
                 e.gamepad.index,
@@ -275,13 +347,3 @@ const main = async function() {
                 e.gamepad.axes.length,
             );
         });
-        const controller = Control.Controller.create();
-
-        await new Promise(resolve => setTimeout(resolve, 1000));
-        controller.disconnect();
-
-
-    });
-
-};
-main();
