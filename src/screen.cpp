@@ -9,10 +9,24 @@
     #include <ApplicationServices/ApplicationServices.h>
     #include <CoreGraphics/CoreGraphics.h>
 #elif defined(IS_LINUX)
+    #include <stdlib.h>
+    #include <cmath>
     #include <X11/Xlib.h>
     #include <X11/extensions/Xrandr.h>
-    #include "xdisplay.h"
+    #include <X11/extensions/XTest.h>
+    #include <X11/extensions/Xfixes.h>
+
+    // Helper function to get the main X11 display
+    // Returns a singleton Display* connection
+    inline Display* XGetMainDisplay() {
+        static Display* display = nullptr;
+        if (display == nullptr) {
+            display = XOpenDisplay(nullptr);
+        }
+        return display;
+    }
 #endif
+
 
 // helper function to list screens
 #if defined(IS_WINDOWS)
@@ -75,7 +89,7 @@ BOOL CALLBACK MonitorEnumProc(HMONITOR hMonitor, HDC hdcMonitor, LPRECT lprcMoni
 }
 #endif
 
-Napi::Array Screen::list(const Napi::CallbackInfo& info) {
+Napi::Array IScreen::list(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
 
     Napi::Array result = Napi::Array::New(env);
@@ -194,6 +208,9 @@ Napi::Array Screen::list(const Napi::CallbackInfo& info) {
                                 // Calculate DPI from physical size
                                 dpi = (crtcInfo->width * 25.4) / outputInfo->mm_width;
                                 scaleFactor = dpi / 96.0;
+
+                                // Round to nearest 5% (0.05) increment
+                                scaleFactor = round(scaleFactor * 20.0) / 20.0;
                             }
                             
                             screenObj.Set("isPrimary", Napi::Boolean::New(env, isPrimary));
@@ -226,7 +243,7 @@ Napi::Array Screen::list(const Napi::CallbackInfo& info) {
             screenObj.Set("y", Napi::Number::New(env, 0));
             screenObj.Set("scaleFactor", Napi::Number::New(env, 1.0));
             
-            result.Set(0, screenObj);
+            result.Set((int)0, screenObj);
         }
 
     #endif
@@ -235,8 +252,8 @@ Napi::Array Screen::list(const Napi::CallbackInfo& info) {
 }
 
 
-Napi::Object Screen::Init(Napi::Env env, Napi::Object exports) {
+Napi::Object IScreen::Init(Napi::Env env, Napi::Object exports) {
     Napi::Object obj = Napi::Object::New(env);
-    obj.Set(Napi::String::New(env, "list"), Napi::Function::New(env, Screen::list));
+    obj.Set(Napi::String::New(env, "list"), Napi::Function::New(env, IScreen::list));
     return obj;
 }

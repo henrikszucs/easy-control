@@ -8,10 +8,20 @@
 #elif defined(IS_MACOS)
     #include <ApplicationServices/ApplicationServices.h>
 #elif defined(IS_LINUX)
+    #include <stdlib.h>
     #include <X11/Xlib.h>
     #include <X11/extensions/XTest.h>
-    #include <stdlib.h>
-    #include "xdisplay.h"
+    #include <X11/extensions/Xfixes.h>
+
+    // Helper function to get the main X11 display
+    // Returns a singleton Display* connection
+    inline Display* XGetMainDisplay() {
+        static Display* display = nullptr;
+        if (display == nullptr) {
+            display = XOpenDisplay(nullptr);
+        }
+        return display;
+    }
 #endif
 
 
@@ -368,7 +378,7 @@ void Mouse::setX(const Napi::CallbackInfo& info) {
         int root_x, root_y;
         int win_x, win_y;
         unsigned int mask_return;
-        d
+        
         // Get current Y position
         XQueryPointer(display, root, &window_returned,
             &window_returned, &root_x, &root_y,

@@ -11,7 +11,7 @@
     #include <X11/Xlib.h>
     #include <X11/keysym.h>
     #include <X11/extensions/XTest.h>
-    #include "xdisplay.h"
+    #include <X11/XKBlib.h>
 #endif
 
 #include <string>
@@ -532,7 +532,26 @@ void Keyboard::keyDown(const Napi::CallbackInfo& info) {
     #elif defined(IS_MACOS)
         //Later implementation
     #elif defined(IS_LINUX)
-        //Later implementation
+        Display *display = XOpenDisplay(NULL);
+        if (display == NULL) {
+            Napi::Error::New(env, "Failed to open X display").ThrowAsJavaScriptException();
+            return;
+        }
+        
+        auto it = SpecialKeys.find(key);
+        if (it == SpecialKeys.end()) {
+            XCloseDisplay(display);
+            Napi::Error::New(env, "Key not supported").ThrowAsJavaScriptException();
+            return;
+        }
+        
+        unsigned int keycode = it->second;
+        
+        // Send key press event
+        XTestFakeKeyEvent(display, keycode, True, 0);
+        XFlush(display);
+        
+        XCloseDisplay(display);
     #endif
 
     return;
@@ -576,7 +595,26 @@ void Keyboard::keyUp(const Napi::CallbackInfo& info) {
     #elif defined(IS_MACOS)
         //Later implementation
     #elif defined(IS_LINUX)
-        //Later implementation
+        Display *display = XOpenDisplay(NULL);
+        if (display == NULL) {
+            Napi::Error::New(env, "Failed to open X display").ThrowAsJavaScriptException();
+            return;
+        }
+        
+        auto it = SpecialKeys.find(key);
+        if (it == SpecialKeys.end()) {
+            XCloseDisplay(display);
+            Napi::Error::New(env, "Key not supported").ThrowAsJavaScriptException();
+            return;
+        }
+        
+        unsigned int keycode = it->second;
+        
+        // Send key release event
+        XTestFakeKeyEvent(display, keycode, False, 0);
+        XFlush(display);
+        
+        XCloseDisplay(display);
     #endif
 
     return;
@@ -650,7 +688,56 @@ void Keyboard::type(const Napi::CallbackInfo& info) {
     #elif defined(IS_MACOS)
         //Later implementation
     #elif defined(IS_LINUX)
-        //Later implementation
+        Display *display = XOpenDisplay(NULL);
+        if (display == NULL) {
+            Napi::Error::New(env, "Failed to open X display").ThrowAsJavaScriptException();
+            return;
+        }
+        
+        // Type each character in the string
+        for (size_t i = 0; i < key.length(); ) {
+            // Handle UTF-8 multi-byte characters
+            unsigned char c = key[i];
+            uint32_t unicode = 0;
+            int bytes = 1;
+            
+            // Decode UTF-8
+            if (c < 0x80) {
+                // Single byte (ASCII)
+                unicode = c;
+                bytes = 1;
+            } else if ((c & 0xE0) == 0xC0) {
+                // 2 bytes
+                unicode = ((c & 0x1F) << 6) | (key[i + 1] & 0x3F);
+                bytes = 2;
+            } else if ((c & 0xF0) == 0xE0) {
+                // 3 bytes
+                unicode = ((c & 0x0F) << 12) | ((key[i + 1] & 0x3F) << 6) | (key[i + 2] & 0x3F);
+                bytes = 3;
+            } else if ((c & 0xF8) == 0xF0) {
+                // 4 bytes
+                unicode = ((c & 0x07) << 18) | ((key[i + 1] & 0x3F) << 12) | 
+                        ((key[i + 2] & 0x3F) << 6) | (key[i + 3] & 0x3F);
+                bytes = 4;
+            }
+            
+            // Convert Unicode to X11 KeySym
+            KeySym keysym = unicode;
+            
+            // Get the keycode for this keysym
+            KeyCode keycode = XKeysymToKeycode(display, keysym);
+            
+            if (keycode != 0) {
+                // Send key press and release
+                XTestFakeKeyEvent(display, keycode, True, 0);
+                XTestFakeKeyEvent(display, keycode, False, 0);
+            }
+            
+            i += bytes;
+        }
+        
+        XFlush(display);
+        XCloseDisplay(display);
     #endif
 }
 
@@ -672,7 +759,48 @@ Napi::String Keyboard::GetLayout(const Napi::CallbackInfo& info) {
     #elif defined(IS_MACOS)
         //Later implementation
     #elif defined(IS_LINUX)
-        //Later implementation
+        Display *display = XOpenDisplay(NULL);
+        if (display == NULL) {
+            Napi::Error::New(env, "Failed to open X display").ThrowAsJavaScriptException();
+            return Napi::String::New(env, "");
+        }
+        
+        // Get the XKB state
+        XkbStateRec state;
+        if (XkbGetState(display, XkbUseCoreKbd, &state) != Success) {
+            XCloseDisplay(display);
+            Napi::Error::New(env, "Failed to get keyboard state").ThrowAsJavaScriptException();
+            return Napi::String::New(env, "");
+        }
+        
+        // Get the XKB descriptor
+        XkbDescPtr kbd = XkbGetKeyboard(display, XkbAllComponentsMask, XkbUseCoreKbd);
+        if (kbd == NULL) {
+            XCloseDisplay(display);
+            Napi::Error::New(env, "Failed to get keyboard descriptor").ThrowAsJavaScriptException();
+            return Napi::String::New(env, "");
+        }
+        
+        // Get the group (layout) names
+        Atom* groupNames = kbd->names->groups;
+        if (groupNames == NULL || groupNames[state.group] == None) {
+            XkbFreeKeyboard(kbd, 0, True);
+            XCloseDisplay(display);
+            return Napi::String::New(env, "");
+        }
+        
+        // Get the layout name
+        char* layoutName = XGetAtomName(display, groupNames[state.group]);
+        std::string layout = (layoutName != NULL) ? std::string(layoutName) : "";
+        
+        if (layoutName != NULL) {
+            XFree(layoutName);
+        }
+        
+        XkbFreeKeyboard(kbd, 0, True);
+        XCloseDisplay(display);
+        
+        return Napi::String::New(env, layout);
     #endif
     return Napi::String::New(env, "");
 }
@@ -708,7 +836,58 @@ void Keyboard::SetLayout(const Napi::CallbackInfo& info) {
     #elif defined(IS_MACOS)
         //Later implementation
     #elif defined(IS_LINUX)
-        //Later implementation
+        Display *display = XOpenDisplay(NULL);
+        if (display == NULL) {
+            Napi::Error::New(env, "Failed to open X display").ThrowAsJavaScriptException();
+            return;
+        }
+        
+        // Get the XKB descriptor
+        XkbDescPtr kbd = XkbGetKeyboard(display, XkbAllComponentsMask, XkbUseCoreKbd);
+        if (kbd == NULL) {
+            XCloseDisplay(display);
+            Napi::Error::New(env, "Failed to get keyboard descriptor").ThrowAsJavaScriptException();
+            return;
+        }
+        
+        // Get the group (layout) names
+        Atom* groupNames = kbd->names->groups;
+        if (groupNames == NULL) {
+            XkbFreeKeyboard(kbd, 0, True);
+            XCloseDisplay(display);
+            Napi::Error::New(env, "No keyboard layouts available").ThrowAsJavaScriptException();
+            return;
+        }
+        
+        // Find the layout group index by name
+        int targetGroup = -1;
+        for (int i = 0; i < XkbNumKbdGroups; i++) {
+            if (groupNames[i] != None) {
+                char* groupName = XGetAtomName(display, groupNames[i]);
+                if (groupName != NULL) {
+                    if (layout == std::string(groupName)) {
+                        targetGroup = i;
+                        XFree(groupName);
+                        break;
+                    }
+                    XFree(groupName);
+                }
+            }
+        }
+        
+        if (targetGroup == -1) {
+            XkbFreeKeyboard(kbd, 0, True);
+            XCloseDisplay(display);
+            Napi::Error::New(env, "Layout not found").ThrowAsJavaScriptException();
+            return;
+        }
+        
+        // Lock to the target group (layout)
+        XkbLockGroup(display, XkbUseCoreKbd, targetGroup);
+        XFlush(display);
+        
+        XkbFreeKeyboard(kbd, 0, True);
+        XCloseDisplay(display);
     #endif
     return;
 }

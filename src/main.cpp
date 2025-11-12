@@ -45,7 +45,7 @@ Napi::Object InitAll(Napi::Env env, Napi::Object exports) {
     obj.Set(Napi::String::New(env, "Mouse"), Mouse::Init(env, exports));
     obj.Set(Napi::String::New(env, "Keyboard"), Keyboard::Init(env, exports));
     obj.Set(Napi::String::New(env, "Gamepad"), Gamepad::Init(env, exports));
-    obj.Set(Napi::String::New(env, "Screen"), Screen::Init(env, exports));
+    obj.Set(Napi::String::New(env, "Screen"), IScreen::Init(env, exports));
 
     return obj;
 }

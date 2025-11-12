@@ -178,6 +178,6 @@ npm run uninstall
 - install Xcode [https://apps.apple.com/us/app/xcode/id497799835](https://apps.apple.com/us/app/xcode/id497799835)
 
 #### Linux
-- ```sudo apt-get install libxtst-dev libpng++-dev gcc```
+- ```sudo apt-get install libx11-dev libxtst-dev libxfixes-dev libxrandr-dev libpng-dev zlib1g-dev```
 
 

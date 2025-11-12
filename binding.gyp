@@ -25,14 +25,12 @@
                 {
                     "defines": ["IS_WINDOWS"],
                     "include_dirs": [
-                        "<(module_root_dir)/src/vjoy_driver/inc",
                         "<(module_root_dir)/src/inc/"
                     ],
                     "libraries": [
                         "setupapi.lib",
                         "shell32.lib",
-                        "<(module_root_dir)/src/inc/ViGEm/lib/ViGEmClient.lib",
-                        "<(module_root_dir)/src/vjoy_driver/lib/x64/vJoyInterface.lib"
+                        "<(module_root_dir)/src/inc/ViGEm/lib/ViGEmClient.lib"
                     ]
                 }
             ],
@@ -65,7 +63,9 @@
                             "-lpng",
                             "-lz",
                             "-lX11",
-                            "-lXtst"
+                            "-lXtst",
+                            "-lXfixes",
+                            "-lXrandr"
                         ]
                     }
                 }

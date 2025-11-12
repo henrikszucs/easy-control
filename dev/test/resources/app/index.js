@@ -142,8 +142,8 @@ const main = async function() {
             });
         };
         const getRandomPos = function() {
-            const x = Math.floor(Math.random() * bounds["width"]) + bounds["x"] + 10;
-            const y = Math.floor(Math.random() * bounds["height"]) + bounds["y"] + 10;
+            const x = Math.floor(Math.random() * bounds["width"] -100) + bounds["x"] + 100;
+            const y = Math.floor(Math.random() * bounds["height"] -100) + bounds["y"] + 100;
             return {
                 "x": x,
                 "y": y
@@ -197,7 +197,7 @@ const main = async function() {
         }
 
         logElem.innerHTML += "<li style='color:green'>Mouse API test passed.</li>";
-
+        window.scrollTo(0, 0);
 
         //test Keyboard API
         let onKeyDown = [];
