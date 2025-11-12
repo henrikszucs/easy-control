@@ -33,7 +33,7 @@
         }
     ],
     "scripts": {
-        "install" : "echo",
+        "install" : "npm install -g node-gyp",
         "build": "node index.js",
         "test": "node dev/test.js",
         "uninstall": "node index.js -- --uninstall"
