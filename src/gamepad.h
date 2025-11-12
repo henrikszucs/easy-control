@@ -15,6 +15,22 @@
     typedef struct _XUSB_REPORT XUSB_REPORT;
     typedef struct _XUSB_REPORT* PXUSB_REPORT;
     
+#elif defined(MACOS)
+    // macOS specific includes
+#elif defined(IS_LINUX)
+    // Linux uinput file descriptor
+    typedef int UINPUT_FD;
+    
+    // Structure to track gamepad state
+    struct GamepadState {
+        short thumbLX;
+        short thumbLY;
+        short thumbRX;
+        short thumbRY;
+        unsigned char leftTrigger;
+        unsigned char rightTrigger;
+        unsigned short buttons;
+    };
 #endif
 
 class InstallDriver : public Napi::AsyncWorker {
@@ -52,6 +68,11 @@ class Gamepad : public Napi::ObjectWrap<Gamepad> {
             PVIGEM_CLIENT m_client = nullptr;
             PVIGEM_TARGET m_pad = nullptr;
             PXUSB_REPORT m_report = nullptr;
+        #elif defined(MACOS)
+            // macOS specific members
+        #elif defined(IS_LINUX)
+            UINPUT_FD m_uinput_fd = -1;
+            GamepadState* m_state = nullptr;
         #endif
 };
 

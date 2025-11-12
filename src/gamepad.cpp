@@ -117,8 +117,136 @@ Gamepad::Gamepad(const Napi::CallbackInfo& info) : Napi::ObjectWrap<Gamepad>(inf
         // macOS specific initialization
 
     #elif defined(IS_LINUX)
-        // Linux specific initialization
+        // Linux specific initialization using uinput
+        // Try multiple possible paths for uinput
+        this->m_uinput_fd = open("/dev/uinput", O_WRONLY | O_NONBLOCK);
+        if (this->m_uinput_fd < 0) {
+            // Try alternative path
+            this->m_uinput_fd = open("/dev/input/uinput", O_WRONLY | O_NONBLOCK);
+            if (this->m_uinput_fd < 0) {
+                // Try without O_NONBLOCK
+                this->m_uinput_fd = open("/dev/uinput", O_WRONLY);
+                if (this->m_uinput_fd < 0) {
+                    this->m_uinput_fd = open("/dev/input/uinput", O_WRONLY);
+                    if (this->m_uinput_fd < 0) {
+                        this->m_active = false;
+                        return;
+                    }
+                }
+            }
+        }
 
+        // Enable event types
+        if (ioctl(this->m_uinput_fd, UI_SET_EVBIT, EV_KEY) < 0) {
+            close(this->m_uinput_fd);
+            this->m_uinput_fd = -1;
+            this->m_active = false;
+            return;
+        }
+        
+        if (ioctl(this->m_uinput_fd, UI_SET_EVBIT, EV_ABS) < 0) {
+            close(this->m_uinput_fd);
+            this->m_uinput_fd = -1;
+            this->m_active = false;
+            return;
+        }
+
+        // Enable buttons (BTN_GAMEPAD + standard Xbox buttons)
+        ioctl(this->m_uinput_fd, UI_SET_KEYBIT, BTN_SOUTH);      // A
+        ioctl(this->m_uinput_fd, UI_SET_KEYBIT, BTN_EAST);       // B
+        ioctl(this->m_uinput_fd, UI_SET_KEYBIT, BTN_NORTH);      // X
+        ioctl(this->m_uinput_fd, UI_SET_KEYBIT, BTN_WEST);       // Y
+        ioctl(this->m_uinput_fd, UI_SET_KEYBIT, BTN_TL);         // LB
+        ioctl(this->m_uinput_fd, UI_SET_KEYBIT, BTN_TR);         // RB
+        ioctl(this->m_uinput_fd, UI_SET_KEYBIT, BTN_SELECT);     // Back
+        ioctl(this->m_uinput_fd, UI_SET_KEYBIT, BTN_START);      // Start
+        ioctl(this->m_uinput_fd, UI_SET_KEYBIT, BTN_MODE);       // Guide
+        ioctl(this->m_uinput_fd, UI_SET_KEYBIT, BTN_THUMBL);     // Left Stick
+        ioctl(this->m_uinput_fd, UI_SET_KEYBIT, BTN_THUMBR);     // Right Stick
+
+        // Enable axes
+        ioctl(this->m_uinput_fd, UI_SET_ABSBIT, ABS_X);          // Left stick X
+        ioctl(this->m_uinput_fd, UI_SET_ABSBIT, ABS_Y);          // Left stick Y
+        ioctl(this->m_uinput_fd, UI_SET_ABSBIT, ABS_RX);         // Right stick X
+        ioctl(this->m_uinput_fd, UI_SET_ABSBIT, ABS_RY);         // Right stick Y
+        ioctl(this->m_uinput_fd, UI_SET_ABSBIT, ABS_Z);          // Left trigger
+        ioctl(this->m_uinput_fd, UI_SET_ABSBIT, ABS_RZ);         // Right trigger
+        ioctl(this->m_uinput_fd, UI_SET_ABSBIT, ABS_HAT0X);      // D-pad X
+        ioctl(this->m_uinput_fd, UI_SET_ABSBIT, ABS_HAT0Y);      // D-pad Y
+
+        // Setup device
+        struct uinput_setup usetup;
+        memset(&usetup, 0, sizeof(usetup));
+        usetup.id.bustype = BUS_USB;
+        usetup.id.vendor = 0x045e;  // Microsoft
+        usetup.id.product = 0x028e; // Xbox 360 Controller
+        usetup.id.version = 1;
+        strncpy(usetup.name, "Virtual Xbox 360 Controller", UINPUT_MAX_NAME_SIZE);
+
+        // Configure axis ranges
+        struct uinput_abs_setup abs_setup;
+        memset(&abs_setup, 0, sizeof(abs_setup));
+        
+        // Left stick X
+        abs_setup.code = ABS_X;
+        abs_setup.absinfo.minimum = -32768;
+        abs_setup.absinfo.maximum = 32767;
+        abs_setup.absinfo.value = 0;
+        ioctl(this->m_uinput_fd, UI_ABS_SETUP, &abs_setup);
+        
+        // Left stick Y
+        abs_setup.code = ABS_Y;
+        ioctl(this->m_uinput_fd, UI_ABS_SETUP, &abs_setup);
+        
+        // Right stick X
+        abs_setup.code = ABS_RX;
+        ioctl(this->m_uinput_fd, UI_ABS_SETUP, &abs_setup);
+        
+        // Right stick Y
+        abs_setup.code = ABS_RY;
+        ioctl(this->m_uinput_fd, UI_ABS_SETUP, &abs_setup);
+        
+        // Triggers (0-255)
+        abs_setup.absinfo.minimum = 0;
+        abs_setup.absinfo.maximum = 255;
+        abs_setup.code = ABS_Z;
+        ioctl(this->m_uinput_fd, UI_ABS_SETUP, &abs_setup);
+        
+        abs_setup.code = ABS_RZ;
+        ioctl(this->m_uinput_fd, UI_ABS_SETUP, &abs_setup);
+        
+        // D-pad (-1, 0, 1)
+        abs_setup.absinfo.minimum = -1;
+        abs_setup.absinfo.maximum = 1;
+        abs_setup.code = ABS_HAT0X;
+        ioctl(this->m_uinput_fd, UI_ABS_SETUP, &abs_setup);
+        
+        abs_setup.code = ABS_HAT0Y;
+        ioctl(this->m_uinput_fd, UI_ABS_SETUP, &abs_setup);
+
+        // Create the device
+        if (ioctl(this->m_uinput_fd, UI_DEV_SETUP, &usetup) < 0) {
+            close(this->m_uinput_fd);
+            this->m_uinput_fd = -1;
+            this->m_active = false;
+            return;
+        }
+        
+        if (ioctl(this->m_uinput_fd, UI_DEV_CREATE) < 0) {
+            close(this->m_uinput_fd);
+            this->m_uinput_fd = -1;
+            this->m_active = false;
+            return;
+        }
+
+        // Give the system time to create the device
+        usleep(100000); // 100ms delay
+
+        // Allocate state tracking
+        this->m_state = new GamepadState();
+        memset(this->m_state, 0, sizeof(GamepadState));
+
+        this->m_active = true;
     #endif
 
     
@@ -144,7 +272,15 @@ Gamepad::~Gamepad() {
     #elif defined(MACOS)
         // macOS specific cleanup
     #elif defined(IS_LINUX)
-        // Linux specific cleanup
+        if (this->m_uinput_fd >= 0) {
+            ioctl(this->m_uinput_fd, UI_DEV_DESTROY);
+            close(this->m_uinput_fd);
+            this->m_uinput_fd = -1;
+        }
+        if (this->m_state != nullptr) {
+            delete this->m_state;
+            this->m_state = nullptr;
+        }
     #endif
 }
 
@@ -228,7 +364,81 @@ void Gamepad::ButtonDown(const Napi::CallbackInfo& info) {
     #elif defined(MACOS)
         // macOS specific button down implementation
     #elif defined(IS_LINUX)
-        // Linux specific button down implementation
+        // Map button index to Linux input button codes
+        int buttonCode = -1;
+        switch (btnIndex) {
+            case 0: buttonCode = BTN_SOUTH; break;
+            case 1: buttonCode = BTN_EAST; break;
+            case 2: buttonCode = BTN_NORTH; break;
+            case 3: buttonCode = BTN_WEST; break;
+            case 4: buttonCode = BTN_TL; break;
+            case 5: buttonCode = BTN_TR; break;
+            case 8: buttonCode = BTN_SELECT; break;
+            case 9: buttonCode = BTN_START; break;
+            case 10: buttonCode = BTN_THUMBL; break;
+            case 11: buttonCode = BTN_THUMBR; break;
+            case 16: buttonCode = BTN_MODE; break;
+            case 12: // D-pad Up
+            case 13: // D-pad Down
+            case 14: // D-pad Left
+            case 15: // D-pad Right
+                // D-pad handled via HAT axes
+                {
+                    struct input_event ev[2];
+                    memset(ev, 0, sizeof(ev));
+                    
+                    if (btnIndex == 12) { // Up
+                        ev[0].type = EV_ABS;
+                        ev[0].code = ABS_HAT0Y;
+                        ev[0].value = -1;
+                    } else if (btnIndex == 13) { // Down
+                        ev[0].type = EV_ABS;
+                        ev[0].code = ABS_HAT0Y;
+                        ev[0].value = 1;
+                    } else if (btnIndex == 14) { // Left
+                        ev[0].type = EV_ABS;
+                        ev[0].code = ABS_HAT0X;
+                        ev[0].value = -1;
+                    } else if (btnIndex == 15) { // Right
+                        ev[0].type = EV_ABS;
+                        ev[0].code = ABS_HAT0X;
+                        ev[0].value = 1;
+                    }
+                    
+                    ev[1].type = EV_SYN;
+                    ev[1].code = SYN_REPORT;
+                    ev[1].value = 0;
+                    
+                    if (write(this->m_uinput_fd, ev, sizeof(ev)) < 0) {
+                        Napi::Error::New(env, "Failed to update gamepad state").ThrowAsJavaScriptException();
+                        return;
+                    }
+                }
+                return;
+            case 6:
+            case 7:
+            default:
+                Napi::RangeError::New(env, "Invalid button index").ThrowAsJavaScriptException();
+                return;
+        }
+
+        if (buttonCode >= 0) {
+            struct input_event ev[2];
+            memset(ev, 0, sizeof(ev));
+            
+            ev[0].type = EV_KEY;
+            ev[0].code = buttonCode;
+            ev[0].value = 1; // Press
+            
+            ev[1].type = EV_SYN;
+            ev[1].code = SYN_REPORT;
+            ev[1].value = 0;
+            
+            if (write(this->m_uinput_fd, ev, sizeof(ev)) < 0) {
+                Napi::Error::New(env, "Failed to update gamepad state").ThrowAsJavaScriptException();
+                return;
+            }
+        }
     #endif
 }
 
@@ -291,7 +501,73 @@ void Gamepad::ButtonUp(const Napi::CallbackInfo& info) {
     #elif defined(MACOS)
         // macOS specific button down implementation
     #elif defined(IS_LINUX)
-        // Linux specific button down implementation
+        // Map button index to Linux input button codes
+        int buttonCode = -1;
+        switch (btnIndex) {
+            case 0: buttonCode = BTN_SOUTH; break;
+            case 1: buttonCode = BTN_EAST; break;
+            case 2: buttonCode = BTN_NORTH; break;
+            case 3: buttonCode = BTN_WEST; break;
+            case 4: buttonCode = BTN_TL; break;
+            case 5: buttonCode = BTN_TR; break;
+            case 8: buttonCode = BTN_SELECT; break;
+            case 9: buttonCode = BTN_START; break;
+            case 10: buttonCode = BTN_THUMBL; break;
+            case 11: buttonCode = BTN_THUMBR; break;
+            case 16: buttonCode = BTN_MODE; break;
+            case 12: // D-pad Up
+            case 13: // D-pad Down
+            case 14: // D-pad Left
+            case 15: // D-pad Right
+                // D-pad handled via HAT axes - release to neutral
+                {
+                    struct input_event ev[3];
+                    memset(ev, 0, sizeof(ev));
+                    
+                    if (btnIndex == 12 || btnIndex == 13) { // Up/Down
+                        ev[0].type = EV_ABS;
+                        ev[0].code = ABS_HAT0Y;
+                        ev[0].value = 0;
+                    } else { // Left/Right
+                        ev[0].type = EV_ABS;
+                        ev[0].code = ABS_HAT0X;
+                        ev[0].value = 0;
+                    }
+                    
+                    ev[1].type = EV_SYN;
+                    ev[1].code = SYN_REPORT;
+                    ev[1].value = 0;
+                    
+                    if (write(this->m_uinput_fd, ev, sizeof(ev)) < 0) {
+                        Napi::Error::New(env, "Failed to update gamepad state").ThrowAsJavaScriptException();
+                        return;
+                    }
+                }
+                return;
+            case 6:
+            case 7:
+            default:
+                Napi::RangeError::New(env, "Invalid button index").ThrowAsJavaScriptException();
+                return;
+        }
+
+        if (buttonCode >= 0) {
+            struct input_event ev[2];
+            memset(ev, 0, sizeof(ev));
+            
+            ev[0].type = EV_KEY;
+            ev[0].code = buttonCode;
+            ev[0].value = 0; // Release
+            
+            ev[1].type = EV_SYN;
+            ev[1].code = SYN_REPORT;
+            ev[1].value = 0;
+            
+            if (write(this->m_uinput_fd, ev, sizeof(ev)) < 0) {
+                Napi::Error::New(env, "Failed to update gamepad state").ThrowAsJavaScriptException();
+                return;
+            }
+        }
     #endif
 }
 
@@ -353,7 +629,50 @@ void Gamepad::SetAxis(const Napi::CallbackInfo& info) {
     #elif defined(MACOS)
         // macOS specific button down implementation
     #elif defined(IS_LINUX)
-        // Linux specific button down implementation
+        // Convert normalized value (-1.0 to 1.0) to appropriate range
+        struct input_event ev[2];
+        memset(ev, 0, sizeof(ev));
+        
+        ev[0].type = EV_ABS;
+        
+        switch (axisIndex) {
+            case 0: // Left Stick X
+                ev[0].code = ABS_X;
+                ev[0].value = (int)(axisValue * 32767.0);
+                break;
+            case 1: // Left Stick Y
+                ev[0].code = ABS_Y;
+                ev[0].value = (int)(axisValue * 32767.0);
+                break;
+            case 2: // Right Stick X
+                ev[0].code = ABS_RX;
+                ev[0].value = (int)(axisValue * 32767.0);
+                break;
+            case 3: // Right Stick Y
+                ev[0].code = ABS_RY;
+                ev[0].value = (int)(axisValue * 32767.0);
+                break;
+            case 4: // Left Trigger
+                ev[0].code = ABS_Z;
+                ev[0].value = (int)((axisValue + 1.0) * 127.5);
+                break;
+            case 5: // Right Trigger
+                ev[0].code = ABS_RZ;
+                ev[0].value = (int)((axisValue + 1.0) * 127.5);
+                break;
+            default:
+                Napi::RangeError::New(env, "Invalid axis index").ThrowAsJavaScriptException();
+                return;
+        }
+        
+        ev[1].type = EV_SYN;
+        ev[1].code = SYN_REPORT;
+        ev[1].value = 0;
+        
+        if (write(this->m_uinput_fd, ev, sizeof(ev)) < 0) {
+            Napi::Error::New(env, "Failed to update gamepad state").ThrowAsJavaScriptException();
+            return;
+        }
     #endif
 }
 

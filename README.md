@@ -72,7 +72,32 @@ Keyboard.SetLayout(layout="");  // Set the keyboard language setting, this affec
 ### Gamepad
 ```js
 /*
+--------------------
 On Windows for gamepad support need the latest ViGEm Bus Driver (https://vigembusdriver.com/download/)
+
+--------------------
+On Linux run few configuration to enable UInput
+# Add your user to the input group
+sudo usermod -a -G input $USER
+
+# Create udev rule for uinput permissions
+sudo tee /etc/udev/rules.d/99-uinput.rules << EOF
+KERNEL=="uinput", MODE="0660", GROUP="input", OPTIONS+="static_node=uinput"
+EOF
+
+# Reload udev rules
+sudo udevadm control --reload-rules && sudo udevadm trigger
+
+# Load uinput module
+sudo modprobe uinput
+
+# Make it load on boot
+echo "uinput" | sudo tee -a /etc/modules
+
+--------------------
+
+
+
 */
 
 
