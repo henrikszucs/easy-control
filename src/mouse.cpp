@@ -7,6 +7,7 @@
     #pragma comment(lib, "Shcore.lib")
 #elif defined(IS_MACOS)
     #include <ApplicationServices/ApplicationServices.h>
+    #import <AppKit/AppKit.h>
 #elif defined(IS_LINUX)
     #include <stdlib.h>
     #include <X11/Xlib.h>

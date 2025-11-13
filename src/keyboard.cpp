@@ -309,7 +309,7 @@ std::map<std::string, CGKeyCode> SpecialKeys = {
     {"F4", kVK_F4},
     {"End", kVK_End},
     {"F2", kVK_F2},
-    {"PageDown", kVK_PageDown}
+    {"PageDown", kVK_PageDown},
     {"F1", kVK_F1},
     {"ArrowLeft", kVK_LeftArrow},
     {"ArrowRight", kVK_RightArrow},

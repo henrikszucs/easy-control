@@ -44,12 +44,17 @@
                         "System/Library/Frameworks/ApplicationServices.framework/Headers",
                         "System/Library/Frameworks/OpenGL.framework/Headers",
                     ],
+                    "xcode_settings": {
+                        "OTHER_CPLUSPLUSFLAGS": ["-ObjC++"]
+                    },
                     "link_settings": {
                         "libraries": [
                             "-framework Carbon",
                             "-framework CoreFoundation",
                             "-framework ApplicationServices",
-                            "-framework OpenGL"
+                            "-framework OpenGL",
+                            "-framework AppKit",
+                            "-framework Cocoa"
                         ]
                     }
                 }
