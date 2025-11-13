@@ -500,10 +500,10 @@ void Mouse::buttonDown(const Napi::CallbackInfo& info) {
         CGEventRef event = CGEventCreate(NULL);
         CGPoint cursor = CGEventGetLocation(event);
         CFRelease(event);
-        
-        CGEventType eventType;
-        CGMouseButton mouseButton;
-        
+    
+        CGEventType eventType = kCGEventLeftMouseDown;  // Initialize with default
+        CGMouseButton mouseButton = kCGMouseButtonLeft;  // Initialize with default
+    
         if (button == "left") {
             eventType = kCGEventLeftMouseDown;
             mouseButton = kCGMouseButtonLeft;
@@ -522,8 +522,13 @@ void Mouse::buttonDown(const Napi::CallbackInfo& info) {
         }
         
         CGEventRef mouseEvent = CGEventCreateMouseEvent(NULL, eventType, cursor, mouseButton);
-        CGEventPost(kCGHIDEventTap, mouseEvent);
-        CFRelease(mouseEvent);
+        if (mouseEvent != NULL) {
+            CGEventPost(kCGHIDEventTap, mouseEvent);
+            CFRelease(mouseEvent);
+        } else {
+            // Handle error if needed
+            Napi::Error::New(env, "Failed to create mouse event").ThrowAsJavaScriptException();
+        }
 
     #elif defined(IS_LINUX)
         Display *display = XGetMainDisplay();
@@ -549,8 +554,6 @@ void Mouse::buttonDown(const Napi::CallbackInfo& info) {
         XFlush(display);
 
     #endif
-
-    return;
 
     return;
 }
@@ -604,9 +607,9 @@ void Mouse::buttonUp(const Napi::CallbackInfo& info) {
         CGPoint cursor = CGEventGetLocation(event);
         CFRelease(event);
         
-        CGEventType eventType;
-        CGMouseButton mouseButton;
-        
+        CGEventType eventType = kCGEventLeftMouseUp;  // Initialize with default
+        CGMouseButton mouseButton = kCGMouseButtonLeft;  // Initialize with default
+    
         if (button == "left") {
             eventType = kCGEventLeftMouseUp;
             mouseButton = kCGMouseButtonLeft;
@@ -625,8 +628,13 @@ void Mouse::buttonUp(const Napi::CallbackInfo& info) {
         }
         
         CGEventRef mouseEvent = CGEventCreateMouseEvent(NULL, eventType, cursor, mouseButton);
-        CGEventPost(kCGHIDEventTap, mouseEvent);
-        CFRelease(mouseEvent);
+        if (mouseEvent != NULL) {
+            CGEventPost(kCGHIDEventTap, mouseEvent);
+            CFRelease(mouseEvent);
+        } else {
+            // Handle error if needed
+            Napi::Error::New(env, "Failed to create mouse event").ThrowAsJavaScriptException();
+        }
 
     #elif defined(IS_LINUX)
         Display *display = XGetMainDisplay();
@@ -696,7 +704,6 @@ void Mouse::scrollDown(const Napi::CallbackInfo& info) {
 
     #elif defined(IS_MACOS)
         CGEventRef event = CGEventCreate(NULL);
-        CGPoint cursor = CGEventGetLocation(event);
         CFRelease(event);
         
         CGEventRef scrollEvent;
@@ -780,7 +787,6 @@ void Mouse::scrollUp(const Napi::CallbackInfo& info) {
 
     #elif defined(IS_MACOS)
         CGEventRef event = CGEventCreate(NULL);
-        CGPoint cursor = CGEventGetLocation(event);
         CFRelease(event);
         
         CGEventRef scrollEvent;

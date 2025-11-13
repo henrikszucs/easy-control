@@ -1,5 +1,5 @@
 # easy-control
-Simple and easy to use node.js module to handle mouse, keyboard and gamepad input for Windows, MacOS and Linux.
+Simple and easy to use node.js module to simulate mouse, keyboard and gamepad input for Windows, MacOS and Linux.
 
 
 

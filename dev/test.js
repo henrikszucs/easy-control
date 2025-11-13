@@ -4,7 +4,21 @@ import Control from "../dist/easy-control.cjs";
 
 
 const main = async () => {
-    /*
+/*
+    setTimeout(async () => {
+        Control.Mouse.buttonDown("left");
+        await new Promise((resolve) => setTimeout(resolve, 500));
+        Control.Mouse.buttonUp("left");
+
+        Control.Keyboard.keyDown("KeyA");
+        Control.Keyboard.keyUp("KeyA");
+
+        Control.Keyboard.type("ő");
+    }, 2000);
+
+    
+
+    
     console.log(Control);
     console.log(Control.Mouse.getX());
     console.log(Control.Mouse.getY());
@@ -56,7 +70,7 @@ const main = async () => {
     console.log(gamepad1);
     console.log(gamepad1.isActive());
     console.log(Control.Gamepad.list());
-/*
+
     await new Promise((resolve) => setTimeout(resolve, 2000));
     for (let i = 0; i < 17; i++) {
         if (i === 6 || i === 7) {
@@ -68,7 +82,7 @@ const main = async () => {
         gamepad1.buttonUp(i);
         await new Promise((resolve) => setTimeout(resolve, 400));
     }
-    */
+    
 
 
     const vals = [-1, -0.7, -0.5, -0.3, 0, 0.3, 0.5, 0.7, 1]; 

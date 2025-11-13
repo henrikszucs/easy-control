@@ -1,7 +1,7 @@
 {
     "name": "easy-control",
     "version": "0.8.6",
-    "description": "Simple and easy to use node.js module to handle mouse, keyboard and controller input for Windows, MacOS and Linux.",
+    "description": "Simple and easy to use node.js module to simulate mouse, keyboard and controller input for Windows, MacOS and Linux.",
     "keywords": [
         "GUI",
         "control",

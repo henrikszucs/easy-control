@@ -45,7 +45,7 @@
                         "System/Library/Frameworks/OpenGL.framework/Headers",
                     ],
                     "xcode_settings": {
-                        "OTHER_CPLUSPLUSFLAGS": ["-ObjC++"]
+                        "OTHER_CPLUSPLUSFLAGS": ["-ObjC++", "-std=c++14"]
                     },
                     "link_settings": {
                         "libraries": [
@@ -54,7 +54,9 @@
                             "-framework ApplicationServices",
                             "-framework OpenGL",
                             "-framework AppKit",
-                            "-framework Cocoa"
+                            "-framework Cocoa",
+                            "-framework IOKit",
+                            "-framework GameController"
                         ]
                     }
                 }

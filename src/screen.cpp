@@ -143,7 +143,6 @@ Napi::Array IScreen::list(const Napi::CallbackInfo& info) {
                     CGDisplayModeRef mode = CGDisplayCopyDisplayMode(display);
                     if (mode) {
                         size_t pixelWidth = CGDisplayModeGetPixelWidth(mode);
-                        size_t pixelHeight = CGDisplayModeGetPixelHeight(mode);
                         
                         // Calculate scale factor
                         if (pixelWidth > 0 && bounds.size.width > 0) {

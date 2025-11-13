@@ -530,7 +530,26 @@ void Keyboard::keyDown(const Napi::CallbackInfo& info) {
         SendInput(1, &Input, sizeof(INPUT));
         
     #elif defined(IS_MACOS)
-        //Later implementation
+        auto it = SpecialKeys.find(key);
+        if (it == SpecialKeys.end()) {
+            Napi::Error::New(env, "Key not supported").ThrowAsJavaScriptException();
+            return;
+        }
+        
+        CGKeyCode keycode = it->second;
+        
+        // Create a key down event
+        CGEventRef keyDownEvent = CGEventCreateKeyboardEvent(NULL, keycode, true);
+        if (keyDownEvent == NULL) {
+            Napi::Error::New(env, "Failed to create key down event").ThrowAsJavaScriptException();
+            return;
+        }
+        
+        // Post the event
+        CGEventPost(kCGHIDEventTap, keyDownEvent);
+        
+        // Release the event
+        CFRelease(keyDownEvent);
     #elif defined(IS_LINUX)
         Display *display = XOpenDisplay(NULL);
         if (display == NULL) {
@@ -593,7 +612,26 @@ void Keyboard::keyUp(const Napi::CallbackInfo& info) {
         SendInput(1, &Input, sizeof(INPUT));
 
     #elif defined(IS_MACOS)
-        //Later implementation
+        auto it = SpecialKeys.find(key);
+        if (it == SpecialKeys.end()) {
+            Napi::Error::New(env, "Key not supported").ThrowAsJavaScriptException();
+            return;
+        }
+        
+        CGKeyCode keycode = it->second;
+        
+        // Create a key up event
+        CGEventRef keyUpEvent = CGEventCreateKeyboardEvent(NULL, keycode, false);
+        if (keyUpEvent == NULL) {
+            Napi::Error::New(env, "Failed to create key up event").ThrowAsJavaScriptException();
+            return;
+        }
+        
+        // Post the event
+        CGEventPost(kCGHIDEventTap, keyUpEvent);
+        
+        // Release the event
+        CFRelease(keyUpEvent);
     #elif defined(IS_LINUX)
         Display *display = XOpenDisplay(NULL);
         if (display == NULL) {
@@ -686,7 +724,45 @@ void Keyboard::type(const Napi::CallbackInfo& info) {
         delete[] wideStr;
 
     #elif defined(IS_MACOS)
-        //Later implementation
+        // Convert UTF-8 string to UTF-16 for macOS
+        CFStringRef cfString = CFStringCreateWithCString(kCFAllocatorDefault, key.c_str(), kCFStringEncodingUTF8);
+        if (cfString == NULL) {
+            Napi::Error::New(env, "Failed to convert string to CFString").ThrowAsJavaScriptException();
+            return;
+        }
+        
+        CFIndex length = CFStringGetLength(cfString);
+        
+        // Type each character
+        for (CFIndex i = 0; i < length; i++) {
+            UniChar character = CFStringGetCharacterAtIndex(cfString, i);
+            
+            // Create a Unicode keyboard event
+            CGEventRef keyDownEvent = CGEventCreateKeyboardEvent(NULL, 0, true);
+            CGEventRef keyUpEvent = CGEventCreateKeyboardEvent(NULL, 0, false);
+            
+            if (keyDownEvent == NULL || keyUpEvent == NULL) {
+                if (keyDownEvent != NULL) CFRelease(keyDownEvent);
+                if (keyUpEvent != NULL) CFRelease(keyUpEvent);
+                CFRelease(cfString);
+                Napi::Error::New(env, "Failed to create keyboard event").ThrowAsJavaScriptException();
+                return;
+            }
+            
+            // Set the Unicode character for the event
+            CGEventKeyboardSetUnicodeString(keyDownEvent, 1, &character);
+            CGEventKeyboardSetUnicodeString(keyUpEvent, 1, &character);
+            
+            // Post the events
+            CGEventPost(kCGHIDEventTap, keyDownEvent);
+            CGEventPost(kCGHIDEventTap, keyUpEvent);
+            
+            // Release the events
+            CFRelease(keyDownEvent);
+            CFRelease(keyUpEvent);
+        }
+        
+        CFRelease(cfString);
     #elif defined(IS_LINUX)
         Display *display = XOpenDisplay(NULL);
         if (display == NULL) {
@@ -757,7 +833,33 @@ Napi::String Keyboard::GetLayout(const Napi::CallbackInfo& info) {
             return Napi::String::New(env, "");
         }
     #elif defined(IS_MACOS)
-        //Later implementation
+        // Get the current keyboard input source
+        TISInputSourceRef currentSource = TISCopyCurrentKeyboardInputSource();
+        if (currentSource == NULL) {
+            Napi::Error::New(env, "Failed to get current input source").ThrowAsJavaScriptException();
+            return Napi::String::New(env, "");
+        }
+        
+        // Get the source ID (e.g., "com.apple.keylayout.US")
+        CFStringRef sourceID = (CFStringRef)TISGetInputSourceProperty(currentSource, kTISPropertyInputSourceID);
+        
+        std::string layout = "";
+        if (sourceID != NULL) {
+            // Convert CFString to C++ string
+            CFIndex length = CFStringGetLength(sourceID);
+            CFIndex maxSize = CFStringGetMaximumSizeForEncoding(length, kCFStringEncodingUTF8) + 1;
+            char* buffer = new char[maxSize];
+            
+            if (CFStringGetCString(sourceID, buffer, maxSize, kCFStringEncodingUTF8)) {
+                layout = std::string(buffer);
+            }
+            
+            delete[] buffer;
+        }
+        
+        CFRelease(currentSource);
+        return Napi::String::New(env, layout);
+        
     #elif defined(IS_LINUX)
         Display *display = XOpenDisplay(NULL);
         if (display == NULL) {
@@ -834,7 +936,42 @@ void Keyboard::SetLayout(const Napi::CallbackInfo& info) {
         PostMessageW(GetForegroundWindow(), WM_INPUTLANGCHANGE, 0, (LPARAM)hkl);    
 
     #elif defined(IS_MACOS)
-        //Later implementation
+        // Convert C++ string to CFString
+        CFStringRef layoutID = CFStringCreateWithCString(kCFAllocatorDefault, layout.c_str(), kCFStringEncodingUTF8);
+        if (layoutID == NULL) {
+            Napi::Error::New(env, "Failed to create CFString from layout").ThrowAsJavaScriptException();
+            return;
+        }
+        
+        // Create a dictionary to filter input sources by ID
+        CFMutableDictionaryRef filter = CFDictionaryCreateMutable(kCFAllocatorDefault, 1, 
+            &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+        CFDictionarySetValue(filter, kTISPropertyInputSourceID, layoutID);
+        
+        // Get the list of input sources matching the filter
+        CFArrayRef inputSources = TISCreateInputSourceList(filter, false);
+        
+        CFRelease(filter);
+        CFRelease(layoutID);
+        
+        if (inputSources == NULL || CFArrayGetCount(inputSources) == 0) {
+            if (inputSources != NULL) CFRelease(inputSources);
+            Napi::Error::New(env, "Layout not found").ThrowAsJavaScriptException();
+            return;
+        }
+        
+        // Get the first matching input source
+        TISInputSourceRef inputSource = (TISInputSourceRef)CFArrayGetValueAtIndex(inputSources, 0);
+        
+        // Select the input source
+        OSStatus status = TISSelectInputSource(inputSource);
+        
+        CFRelease(inputSources);
+        
+        if (status != noErr) {
+            Napi::Error::New(env, "Failed to set keyboard layout").ThrowAsJavaScriptException();
+            return;
+        }
     #elif defined(IS_LINUX)
         Display *display = XOpenDisplay(NULL);
         if (display == NULL) {
