@@ -53,7 +53,7 @@ const build = async () => {
 
     // copy built files
     process.stdout.write("Coping built files...    ");
-    await fs.rm("./dist/", { "recursive": true, "force": true });   // for dev
+    //await fs.rm("./dist/", { "recursive": true, "force": true });   // for dev
     await fs.mkdir("./dist/" + os.platform() + "-" + os.arch() + "/", { "recursive": true });
 
     await fs.copyFile("./src/easy-control.cjs", "./dist/easy-control.cjs");
