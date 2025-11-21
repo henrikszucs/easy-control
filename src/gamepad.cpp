@@ -18,26 +18,8 @@
     #include <ViGEm/Client.h>
     #pragma comment(lib, "ViGEmClient.lib")
 #elif defined(IS_MACOS)
-    #include <IOKit/IOKitLib.h>
-    #include <IOKit/hid/IOHIDLib.h>
-    #include <CoreFoundation/CoreFoundation.h>
     #import <Foundation/Foundation.h>
-    
-    // Declare IOHIDUserDevice functions (available in macOS 10.15+)
-    extern "C" {
-        typedef struct CF_BRIDGED_TYPE(id) __IOHIDUserDevice * IOHIDUserDeviceRef;
-        
-        IOHIDUserDeviceRef _Nullable IOHIDUserDeviceCreate(
-            CFAllocatorRef _Nullable allocator,
-            CFDictionaryRef properties
-        ) __attribute__((weak_import));
-        
-        kern_return_t IOHIDUserDeviceHandleReport(
-            IOHIDUserDeviceRef device,
-            uint8_t * report,
-            CFIndex reportLength
-        ) __attribute__((weak_import));
-    }
+    #include "GamepadBridge.h"
 #elif defined(IS_LINUX)
     #include <unistd.h>
     #include <sys/stat.h>
@@ -131,80 +113,14 @@ Gamepad::Gamepad(const Napi::CallbackInfo& info) : Napi::ObjectWrap<Gamepad>(inf
         this->m_active = true;
 
     #elif defined(IS_MACOS)
-        // Check if IOHIDUserDevice is available (macOS 10.15+)
-        if (IOHIDUserDeviceCreate == NULL) {
-            printf("ERROR: IOHIDUserDevice API not available (requires macOS 10.15+)\n");
-            this->m_state = nullptr;
+        // Create gamepad via GamepadBridge
+        this->m_gamepad_id = [GamepadBridge createGamepad];
+        if (this->m_gamepad_id >= 0) {
+            this->m_active = true;
+        } else {
             this->m_active = false;
-            return;
-        }
-        
-        // HID descriptor for Xbox 360-like gamepad
-        static const unsigned char report_descriptor[] = {
-            0x05, 0x01,        // Usage Page (Generic Desktop)
-            0x09, 0x05,        // Usage (Game Pad)
-            0xA1, 0x01,        // Collection (Application)
-            0x05, 0x09,        //   Usage Page (Button)
-            0x19, 0x01,        //   Usage Minimum (Button 1)
-            0x29, 0x10,        //   Usage Maximum (Button 16)
-            0x15, 0x00,        //   Logical Minimum (0)
-            0x25, 0x01,        //   Logical Maximum (1)
-            0x75, 0x01,        //   Report Size (1)
-            0x95, 0x10,        //   Report Count (16)
-            0x81, 0x02,        //   Input (Data, Variable, Absolute)
-            0x05, 0x01,        //   Usage Page (Generic Desktop)
-            0x09, 0x30,        //   Usage (X)
-            0x09, 0x31,        //   Usage (Y)
-            0x09, 0x32,        //   Usage (Z)
-            0x09, 0x33,        //   Usage (Rx)
-            0x09, 0x34,        //   Usage (Ry)
-            0x09, 0x35,        //   Usage (Rz)
-            0x16, 0x00, 0x80,  //   Logical Minimum (-32768)
-            0x26, 0xFF, 0x7F,  //   Logical Maximum (32767)
-            0x75, 0x10,        //   Report Size (16)
-            0x95, 0x06,        //   Report Count (6)
-            0x81, 0x02,        //   Input (Data, Variable, Absolute)
-            0xC0               // End Collection
-        };
-
-        // Create property dictionary using Objective-C
-        @autoreleasepool {
-            NSMutableDictionary *properties = [NSMutableDictionary dictionary];
-            
-            // Set device properties
-            properties[@(kIOHIDReportDescriptorKey)] = [NSData dataWithBytes:report_descriptor 
-                                                                      length:sizeof(report_descriptor)];
-            properties[@(kIOHIDVendorIDKey)] = @(0x045e);          // Microsoft
-            properties[@(kIOHIDProductIDKey)] = @(0x028e);         // Xbox 360 Controller
-            properties[@(kIOHIDPrimaryUsagePageKey)] = @(0x01);    // Generic Desktop
-            properties[@(kIOHIDPrimaryUsageKey)] = @(0x05);        // Game Pad
-            properties[@(kIOHIDProductKey)] = @"Virtual Xbox 360 Controller";
-            properties[@(kIOHIDManufacturerKey)] = @"Microsoft";
-            properties[@(kIOHIDSerialNumberKey)] = @"EasyControl001";
-            
-            // Create the virtual HID device
-            this->m_device = IOHIDUserDeviceCreate(kCFAllocatorDefault, 
-                                                   (__bridge CFDictionaryRef)properties);
-        }
-        
-        if (!this->m_device) {
-            printf("ERROR: Failed to create IOHIDUserDevice\n");
-            printf("INFO: This may require:\n");
-            printf("  - Running with elevated privileges\n");
-            printf("  - Proper entitlements in the app\n");
-            printf("  - User approval in System Preferences > Privacy & Security\n");
-            this->m_active = false;
-            this->m_state = nullptr;
-            return;
         }
 
-        printf("SUCCESS: IOHIDUserDevice created successfully\n");
-
-        // Allocate state tracking
-        this->m_state = new GamepadState();
-        memset(this->m_state, 0, sizeof(GamepadState));
-
-        this->m_active = true;
     #elif defined(IS_LINUX)
         // Linux specific initialization using uinput
         // Try multiple possible paths for uinput
@@ -359,15 +275,10 @@ Gamepad::~Gamepad() {
             this->m_report = nullptr;
         }
     #elif defined(IS_MACOS)
-        if (this->m_device) {
-            CFRelease(this->m_device);
-            this->m_device = nullptr;
+        if (this->m_gamepad_id >= 0) {
+            [GamepadBridge destroyGamepad:this->m_gamepad_id];
+            this->m_gamepad_id = -1;
         }
-        if (this->m_state != nullptr) {
-            delete this->m_state;
-            this->m_state = nullptr;
-        }
-    
     #elif defined(IS_LINUX)
         if (this->m_uinput_fd >= 0) {
             ioctl(this->m_uinput_fd, UI_DEV_DESTROY);
@@ -459,59 +370,12 @@ void Gamepad::ButtonDown(const Napi::CallbackInfo& info) {
         }
     
     #elif defined(IS_MACOS)
-        // Map button index to button bit
-        unsigned short buttonMask = 0;
-        switch (btnIndex) {
-            case 0: buttonMask = 0x0001; break; // A
-            case 1: buttonMask = 0x0002; break; // B
-            case 2: buttonMask = 0x0004; break; // X
-            case 3: buttonMask = 0x0008; break; // Y
-            case 4: buttonMask = 0x0010; break; // LB
-            case 5: buttonMask = 0x0020; break; // RB
-            case 8: buttonMask = 0x0100; break; // Back
-            case 9: buttonMask = 0x0200; break; // Start
-            case 10: buttonMask = 0x0400; break; // Left Stick
-            case 11: buttonMask = 0x0800; break; // Right Stick
-            case 12: buttonMask = 0x1000; break; // D-pad Up
-            case 13: buttonMask = 0x2000; break; // D-pad Down
-            case 14: buttonMask = 0x4000; break; // D-pad Left
-            case 15: buttonMask = 0x8000; break; // D-pad Right
-            case 16: buttonMask = 0x0080; break; // Guide
-            case 6:
-            case 7:
-            default:
-                Napi::RangeError::New(env, "Invalid button index").ThrowAsJavaScriptException();
-                return;
-        }
-
-        // Set the button bit in current state
-        this->m_state->buttons |= buttonMask;
-
-        // Prepare HID report (2 bytes buttons + 12 bytes axes)
-        unsigned char report[14];
-        memcpy(report, &this->m_state->buttons, 2);
-        memcpy(report + 2, &this->m_state->thumbLX, 2);
-        memcpy(report + 4, &this->m_state->thumbLY, 2);
-        memcpy(report + 6, &this->m_state->thumbRX, 2);
-        memcpy(report + 8, &this->m_state->thumbRY, 2);
-        memcpy(report + 10, &this->m_state->leftTrigger, 2);
-        memcpy(report + 12, &this->m_state->rightTrigger, 2);
-
-        // Send the report using IOHIDUserDevice
-        if (IOHIDUserDeviceHandleReport) {
-            kern_return_t ret = IOHIDUserDeviceHandleReport(this->m_device, report, sizeof(report));
-            
-            if (ret != KERN_SUCCESS) {
-                char error_msg[256];
-                snprintf(error_msg, sizeof(error_msg), "Failed to send HID report (error: 0x%x)", ret);
-                Napi::Error::New(env, error_msg).ThrowAsJavaScriptException();
-                return;
-            }
-        } else {
-            Napi::Error::New(env, "IOHIDUserDeviceHandleReport not available").ThrowAsJavaScriptException();
+        BOOL result = [GamepadBridge buttonDown:this->m_gamepad_id button:btnIndex];
+        if (!result) {
+            Napi::Error::New(env, "Failed to update gamepad state").ThrowAsJavaScriptException();
             return;
         }
-    
+        
     #elif defined(IS_LINUX)
         // Map button index to Linux input button codes
         int buttonCode = -1;
@@ -649,59 +513,13 @@ void Gamepad::ButtonUp(const Napi::CallbackInfo& info) {
         }
     
     #elif defined(IS_MACOS)
-        // Map button index to button bit
-        unsigned short buttonMask = 0;
-        switch (btnIndex) {
-            case 0: buttonMask = 0x0001; break; // A
-            case 1: buttonMask = 0x0002; break; // B
-            case 2: buttonMask = 0x0004; break; // X
-            case 3: buttonMask = 0x0008; break; // Y
-            case 4: buttonMask = 0x0010; break; // LB
-            case 5: buttonMask = 0x0020; break; // RB
-            case 8: buttonMask = 0x0100; break; // Back
-            case 9: buttonMask = 0x0200; break; // Start
-            case 10: buttonMask = 0x0400; break; // Left Stick
-            case 11: buttonMask = 0x0800; break; // Right Stick
-            case 12: buttonMask = 0x1000; break; // D-pad Up
-            case 13: buttonMask = 0x2000; break; // D-pad Down
-            case 14: buttonMask = 0x4000; break; // D-pad Left
-            case 15: buttonMask = 0x8000; break; // D-pad Right
-            case 16: buttonMask = 0x0080; break; // Guide
-            case 6:
-            case 7:
-            default:
-                Napi::RangeError::New(env, "Invalid button index").ThrowAsJavaScriptException();
-                return;
-        }
-
-        // Clear the button bit in current state
-        this->m_state->buttons &= ~buttonMask;
-
-        // Prepare HID report (2 bytes buttons + 12 bytes axes)
-        unsigned char report[14];
-        memcpy(report, &this->m_state->buttons, 2);
-        memcpy(report + 2, &this->m_state->thumbLX, 2);
-        memcpy(report + 4, &this->m_state->thumbLY, 2);
-        memcpy(report + 6, &this->m_state->thumbRX, 2);
-        memcpy(report + 8, &this->m_state->thumbRY, 2);
-        memcpy(report + 10, &this->m_state->leftTrigger, 2);
-        memcpy(report + 12, &this->m_state->rightTrigger, 2);
-
-        // Send the report using IOHIDUserDevice
-        if (IOHIDUserDeviceHandleReport) {
-            kern_return_t ret = IOHIDUserDeviceHandleReport(this->m_device, report, sizeof(report));
-            
-            if (ret != KERN_SUCCESS) {
-                char error_msg[256];
-                snprintf(error_msg, sizeof(error_msg), "Failed to send HID report (error: 0x%x)", ret);
-                Napi::Error::New(env, error_msg).ThrowAsJavaScriptException();
-                return;
-            }
-        } else {
-            Napi::Error::New(env, "IOHIDUserDeviceHandleReport not available").ThrowAsJavaScriptException();
+        BOOL result = [GamepadBridge buttonUp:this->m_gamepad_id button:btnIndex];
+        if (!result) {
+            Napi::Error::New(env, "Failed to update gamepad state").ThrowAsJavaScriptException();
             return;
         }
-    
+        
+        
     #elif defined(IS_LINUX)
         // Map button index to Linux input button codes
         int buttonCode = -1;
@@ -829,60 +647,15 @@ void Gamepad::SetAxis(const Napi::CallbackInfo& info) {
             return;
         }
     #elif defined(IS_MACOS)
-        // Convert normalized value (-1.0 to 1.0) to appropriate range
-        short value = (short)(axisValue * 32767.0);
+        // Convert normalized value (-1.0 to 1.0) to int16 range (-32768 to 32767)
+        int value = (int)(axisValue * 32767.0);
         
-        // Update the appropriate axis in the state
-        switch (axisIndex) {
-            case 0: // Left Stick X
-                this->m_state->thumbLX = value;
-                break;
-            case 1: // Left Stick Y
-                this->m_state->thumbLY = -value; // Invert Y axis
-                break;
-            case 2: // Right Stick X
-                this->m_state->thumbRX = value;
-                break;
-            case 3: // Right Stick Y
-                this->m_state->thumbRY = -value; // Invert Y axis
-                break;
-            case 4: // Left Trigger
-                // Triggers use 0-255 range, convert from -1.0 to 1.0
-                this->m_state->leftTrigger = (unsigned char)((axisValue + 1.0) * 127.5);
-                break;
-            case 5: // Right Trigger
-                // Triggers use 0-255 range, convert from -1.0 to 1.0
-                this->m_state->rightTrigger = (unsigned char)((axisValue + 1.0) * 127.5);
-                break;
-            default:
-                Napi::RangeError::New(env, "Invalid axis index").ThrowAsJavaScriptException();
-                return;
-        }
-
-        // Prepare HID report (2 bytes buttons + 12 bytes axes)
-        unsigned char report[14];
-        memcpy(report, &this->m_state->buttons, 2);
-        memcpy(report + 2, &this->m_state->thumbLX, 2);
-        memcpy(report + 4, &this->m_state->thumbLY, 2);
-        memcpy(report + 6, &this->m_state->thumbRX, 2);
-        memcpy(report + 8, &this->m_state->thumbRY, 2);
-        memcpy(report + 10, &this->m_state->leftTrigger, 2);
-        memcpy(report + 12, &this->m_state->rightTrigger, 2);
-
-        // Send the report using IOHIDUserDevice
-        if (IOHIDUserDeviceHandleReport) {
-            kern_return_t ret = IOHIDUserDeviceHandleReport(this->m_device, report, sizeof(report));
-            
-            if (ret != KERN_SUCCESS) {
-                char error_msg[256];
-                snprintf(error_msg, sizeof(error_msg), "Failed to send HID report (error: 0x%x)", ret);
-                Napi::Error::New(env, error_msg).ThrowAsJavaScriptException();
-                return;
-            }
-        } else {
-            Napi::Error::New(env, "IOHIDUserDeviceHandleReport not available").ThrowAsJavaScriptException();
+        BOOL result = [GamepadBridge setAxis:this->m_gamepad_id axis:axisIndex value:value];
+        if (!result) {
+            Napi::Error::New(env, "Failed to update gamepad state").ThrowAsJavaScriptException();
             return;
         }
+        
     #elif defined(IS_LINUX)
         // Convert normalized value (-1.0 to 1.0) to appropriate range
         struct input_event ev[2];

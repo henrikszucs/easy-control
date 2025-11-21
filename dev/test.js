@@ -70,7 +70,7 @@ const main = async () => {
     console.log(gamepad1);
     console.log(gamepad1.isActive());
     console.log(Control.Gamepad.list());
-
+    /*
     await new Promise((resolve) => setTimeout(resolve, 2000));
     for (let i = 0; i < 17; i++) {
         if (i === 6 || i === 7) {
@@ -97,5 +97,6 @@ const main = async () => {
     console.log(Control.Gamepad.list());
     console.log(gamepad1.isActive());
     console.log(Control.Gamepad.list());
+    */
 };
 main();

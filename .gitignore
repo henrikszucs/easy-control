@@ -4,3 +4,5 @@ build/
 .vscode/
 dev/test/*
 !dev/test/resources/
+build_swift/
+tmp/

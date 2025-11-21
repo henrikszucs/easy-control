@@ -16,19 +16,7 @@
     typedef struct _XUSB_REPORT* PXUSB_REPORT;
     
 #elif defined(IS_MACOS)
-    // Forward declare IOHIDUserDevice
-    typedef struct __IOHIDUserDevice * IOHIDUserDeviceRef;
     
-    // Structure to track gamepad state
-    struct GamepadState {
-        short thumbLX;
-        short thumbLY;
-        short thumbRX;
-        short thumbRY;
-        unsigned char leftTrigger;
-        unsigned char rightTrigger;
-        unsigned short buttons;
-    };
 #elif defined(IS_LINUX)
     // Linux uinput file descriptor
     typedef int UINPUT_FD;
@@ -81,8 +69,8 @@ class Gamepad : public Napi::ObjectWrap<Gamepad> {
             PVIGEM_TARGET m_pad = nullptr;
             PXUSB_REPORT m_report = nullptr;
         #elif defined(IS_MACOS)
-            IOHIDUserDeviceRef m_device = nullptr;
-            GamepadState* m_state = nullptr;
+            int m_gamepad_id = -1;
+
         #elif defined(IS_LINUX)
             UINPUT_FD m_uinput_fd = -1;
             GamepadState* m_state = nullptr;

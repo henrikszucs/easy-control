@@ -70,6 +70,8 @@ const build = async () => {
         }
     } else if (os.platform() === "darwin") {
         await fs.copyFile("./build/Release/easy-control.node", "./dist/" + os.platform() + "-" + os.arch() + "/easy-control.node");
+        await fs.copyFile("./build/Release/GamepadImplement.a", "./dist/" + os.platform() + "-" + os.arch() + "/GamepadImplement.a");
+        await fs.copyFile("./build/Release/nothing.a", "./dist/" + os.platform() + "-" + os.arch() + "/nothing.a");
     } else if (os.platform() === "linux") {
         await fs.copyFile("./build/Release/easy-control.node", "./dist/" + os.platform() + "-" + os.arch() + "/easy-control.node");
     }
@@ -102,7 +104,9 @@ const uninstall = async () => {
         "./package-lock.json",
         "./node_modules",
         "./build",
-        "./.vscode"
+        "./.vscode",
+        "./tmp",
+        "./build_swift"
     ];
     for (const dir of pathList) {
         try {

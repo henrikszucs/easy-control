@@ -276,8 +276,6 @@ Napi::Object Mouse::getIcon(const Napi::CallbackInfo& info) {
             }
         }
 
-        [bitmap release];
-
         result.Set("width", width);
         result.Set("height", height);
         result.Set("data", pixelData);
