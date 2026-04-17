@@ -149,8 +149,8 @@ Napi::Object Mouse::getIcon(const Napi::CallbackInfo& info) {
             result.Set("width", 0);
             result.Set("height", 0);
             result.Set("data", Napi::Array::New(env, 0));
-			result.Set("xOffset", 0);
-			result.Set("yOffset", 0);
+            result.Set("xOffset", 0);
+            result.Set("yOffset", 0);
             return result;
         }
 
@@ -160,8 +160,8 @@ Napi::Object Mouse::getIcon(const Napi::CallbackInfo& info) {
             result.Set("width", 0);
             result.Set("height", 0);
             result.Set("data", Napi::Array::New(env, 0));
-			result.Set("xOffset", 0);
-			result.Set("yOffset", 0);
+            result.Set("xOffset", 0);
+            result.Set("yOffset", 0);
             return result;
         }
 
@@ -171,32 +171,91 @@ Napi::Object Mouse::getIcon(const Napi::CallbackInfo& info) {
         int width = bmp.bmWidth;
         int height = iconInfo.hbmColor ? bmp.bmHeight : bmp.bmHeight / 2;
 
-        // Get your device contexts.
         HDC hdcScreen = GetDC(NULL);
-        HDC hdcMem = CreateCompatibleDC(hdcScreen);
+        Napi::Array pixelData = Napi::Array::New(env, width * height * 4);
+        int outIndex = 0;
 
-        // Create the bitmap to use as a canvas.
-        HBITMAP hbmCanvas = CreateCompatibleBitmap(hdcScreen, width, height);
+        // Setup the Bitmap Info Header to pull 32-bit BGRA data
+        BITMAPINFO bmi = {0};
+        bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+        bmi.bmiHeader.biWidth = width;
+        bmi.bmiHeader.biHeight = -height; // Negative means top-down
+        bmi.bmiHeader.biPlanes = 1;
+        bmi.bmiHeader.biBitCount = 32;    // Enforce 32-bit (BGRA) output
+        bmi.bmiHeader.biCompression = BI_RGB;
 
-        // Select the bitmap into the device context.
-        HGDIOBJ hbmOld = SelectObject(hdcMem, hbmCanvas);
+        if (iconInfo.hbmColor) {
+            // Buffer for Color Bitmap
+            std::vector<uint8_t> colorPixels(width * height * 4);
+            GetDIBits(hdcScreen, iconInfo.hbmColor, 0, height, colorPixels.data(), &bmi, DIB_RGB_COLORS);
 
-        // Draw the cursor into the canvas.
-        DrawIconEx(hdcMem, 0, 0, ci.hCursor, width, height, 0, NULL, DI_NORMAL);
+            // Buffer for Mask Bitmap (fallback in case color has no alpha)
+            std::vector<uint8_t> maskPixels(width * height * 4);
+            GetDIBits(hdcScreen, iconInfo.hbmMask, 0, height, maskPixels.data(), &bmi, DIB_RGB_COLORS);
 
-        // Get the pixel data
-        Napi::Array pixelData = Napi::Array::New(env, width * height);
-        for (int y = 0; y < height; y++) {
-            for (int x = 0; x < width; x++) {
-                COLORREF clr = GetPixel(hdcMem, x, y);
-                pixelData.Set(y * width + x, clr);
+            // Check if the color bitmap actually utilizes the alpha channel
+            bool hasAlphaChannel = false;
+            for (int i = 0; i < width * height; i++) {
+                if (colorPixels[i * 4 + 3] != 0) { // Alpha byte
+                    hasAlphaChannel = true;
+                    break;
+                }
+            }
+
+            for (int i = 0; i < width * height; i++) {
+                uint8_t b = colorPixels[i * 4 + 0];
+                uint8_t g = colorPixels[i * 4 + 1];
+                uint8_t r = colorPixels[i * 4 + 2];
+                uint8_t a = colorPixels[i * 4 + 3];
+
+                if (!hasAlphaChannel) {
+                    // Windows masks: if mask pixel is white (255), the pixel is transparent.
+                    // If mask pixel is black (0), the pixel is drawn.
+                    uint8_t maskVal = maskPixels[i * 4 + 0]; // Any channel will do, it's grayscale
+                    a = (maskVal == 0) ? 255 : 0; 
+
+                    // Clear rgb if transparent
+                    if (a == 0) r = g = b = 0;
+                }
+
+                pixelData.Set(outIndex++, r);
+                pixelData.Set(outIndex++, g);
+                pixelData.Set(outIndex++, b);
+                pixelData.Set(outIndex++, a);
+            }
+        } 
+        else {
+            // Monochrome cursors (e.g. text I-beam) do not have hbmColor.
+            // The top half of hbmMask is the AND mask, bottom half is XOR mask.
+            std::vector<uint8_t> maskPixels(width * (height * 2) * 4);
+            bmi.bmiHeader.biHeight = -(height * 2); // Full height containing both masks
+            GetDIBits(hdcScreen, iconInfo.hbmMask, 0, height * 2, maskPixels.data(), &bmi, DIB_RGB_COLORS);
+
+            for (int i = 0; i < width * height; i++) {
+                // Top half is AND mask
+                uint8_t maskVal = maskPixels[i * 4 + 0]; 
+                // Bottom half is XOR mask
+                uint8_t xorVal = maskPixels[(i + width * height) * 4 + 0];
+
+                uint8_t r = 0, g = 0, b = 0, a = 255;
+                if (maskVal == 255 && xorVal == 0) {
+                    a = 0; // Transparent
+                } else if (maskVal == 0 && xorVal == 0) {
+                    r = g = b = 0; // Black
+                } else if (maskVal == 0 && xorVal == 255) {
+                    r = g = b = 255; // White
+                } else if (maskVal == 255 && xorVal == 255) {
+                    // Inverted pixel (used for I-beam). We treat it as inverted grey or contrasting color.
+                    r = g = b = 128;
+                }
+
+                pixelData.Set(outIndex++, r);
+                pixelData.Set(outIndex++, g);
+                pixelData.Set(outIndex++, b);
+                pixelData.Set(outIndex++, a);
             }
         }
 
-        // Clean up after yourself.
-        SelectObject(hdcMem, hbmOld);
-        DeleteObject(hbmCanvas);
-        DeleteDC(hdcMem);
         ReleaseDC(NULL, hdcScreen);
         
         // Clean up icon info
@@ -258,21 +317,18 @@ Napi::Object Mouse::getIcon(const Napi::CallbackInfo& info) {
         [image drawInRect:NSMakeRect(0, 0, width, height)];
         [NSGraphicsContext restoreGraphicsState];
 
-        // Extract pixel data
+        // Extract pixel data in RGBA format
         unsigned char *bitmapData = [bitmap bitmapData];
-        Napi::Array pixelData = Napi::Array::New(env, width * height);
+        Napi::Array pixelData = Napi::Array::New(env, width * height * 4);
         
+        int index = 0;
         for (int y = 0; y < height; y++) {
             for (int x = 0; x < width; x++) {
                 int offset = (y * width + x) * 4;
-                unsigned char r = bitmapData[offset];
-                unsigned char g = bitmapData[offset + 1];
-                unsigned char b = bitmapData[offset + 2];
-                unsigned char a = bitmapData[offset + 3];
-                
-                // Convert to COLORREF format (0x00BBGGRR) with alpha in high byte
-                uint32_t color = (a << 24) | (r << 16) | (g << 8) | b;
-                pixelData.Set(y * width + x, color);
+                pixelData.Set(index++, bitmapData[offset]);     // R
+                pixelData.Set(index++, bitmapData[offset + 1]); // G
+                pixelData.Set(index++, bitmapData[offset + 2]); // B
+                pixelData.Set(index++, bitmapData[offset + 3]); // A
             }
         }
 
@@ -314,11 +370,17 @@ Napi::Object Mouse::getIcon(const Napi::CallbackInfo& info) {
         int yOffset = cursorImage->yhot;
 
         // Extract pixel data (XFixes returns ARGB format as unsigned long)
-        Napi::Array pixelData = Napi::Array::New(env, width * height);
+        Napi::Array pixelData = Napi::Array::New(env, width * height * 4);
+        int index = 0;
         for (int i = 0; i < width * height; i++) {
             // XFixes cursor pixels are in ARGB format
             unsigned long pixel = cursorImage->pixels[i];
-            pixelData.Set(i, (uint32_t)pixel);
+            
+            // Convert to RGBA
+            pixelData.Set(index++, (uint32_t)((pixel >> 16) & 0xFF)); // R
+            pixelData.Set(index++, (uint32_t)((pixel >> 8) & 0xFF));  // G
+            pixelData.Set(index++, (uint32_t)(pixel & 0xFF));         // B
+            pixelData.Set(index++, (uint32_t)((pixel >> 24) & 0xFF)); // A
         }
 
         XFree(cursorImage);

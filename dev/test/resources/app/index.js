@@ -25,6 +25,8 @@ const main = async function() {
         const logElem = document.getElementById("log");
         logElem.innerHTML = "";
 
+        return;
+
         // place Window
         ipcRenderer.send("api", "set-primary-monitor");
         ipcRenderer.send("api", "maximize-window");
