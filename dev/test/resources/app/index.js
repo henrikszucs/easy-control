@@ -268,7 +268,13 @@ const main = async function() {
         logElem.innerHTML += "<li style='color:green'>Keyboard API test passed.</li>";
 
         //test Controller API
-        const gamepad = Control.Gamepad.create();
+        let gamepad = null;
+        try {
+            gamepad = Control.Gamepad.create();
+        } catch (error) {
+            logElem.innerHTML += "<li style='color:orange'>No virtual gamepad: " + error.message + "</li>";
+            return;
+        }
 
         console.log("Listing gamepads...");
         const controller = Control.Gamepad.list();
@@ -307,9 +313,6 @@ const main = async function() {
         for (let i = 0; i < 20; i++) {
             const btnId = Math.floor(Math.random() * btnNum);
             const isPress = Math.random() >= 0.5;
-            if (btnId === 6 || btnId === 7) {
-                continue;
-            }
             await testBtn(gamepad, btnId, isPress);
         }
 

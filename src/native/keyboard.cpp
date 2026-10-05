@@ -1,0 +1,1256 @@
+#include "keyboard.h"
+#include "platform.h"
+
+#if defined(IS_WINDOWS)
+    #include <windows.h>
+    #include <cstdlib>
+    #include <cwchar>
+    #pragma comment(lib, "advapi32.lib")
+#elif defined(IS_MACOS)
+    #include <ApplicationServices/ApplicationServices.h>
+    #include <Carbon/Carbon.h>
+    #include <CoreFoundation/CoreFoundation.h>
+    #include <cctype>  // for tolower
+#elif defined(IS_LINUX)
+    #include "uinput.h"
+    #include "wayland.h"
+    #include <cstdio>
+    #include <linux/input-event-codes.h>
+    #include <X11/Xlib.h>
+    #include <X11/keysym.h>
+    #include <X11/extensions/XTest.h>
+    #include <X11/XKBlib.h>
+    #include <unistd.h>
+#endif
+
+#include <map>
+#include <string>
+#include <utility>
+#include <vector>
+
+// KeyboardEvent.code -> scan code (set 1); 0xE0xx are extended keys
+#if defined(IS_WINDOWS)
+static const WORD PAUSE_KEY = 0xE11D;
+
+static const std::map<std::string, WORD> SpecialKeys = {
+    {"Escape", 0x0001},
+    {"Digit1", 0x0002},
+    {"Digit2", 0x0003},
+    {"Digit3", 0x0004},
+    {"Digit4", 0x0005},
+    {"Digit5", 0x0006},
+    {"Digit6", 0x0007},
+    {"Digit7", 0x0008},
+    {"Digit8", 0x0009},
+    {"Digit9", 0x000A},
+    {"Digit0", 0x000B},
+    {"Minus", 0x000C},
+    {"Equal", 0x000D},
+    {"Backspace", 0x000E},
+    {"Tab", 0x000F},
+    {"KeyQ", 0x0010},
+    {"KeyW", 0x0011},
+    {"KeyE", 0x0012},
+    {"KeyR", 0x0013},
+    {"KeyT", 0x0014},
+    {"KeyY", 0x0015},
+    {"KeyU", 0x0016},
+    {"KeyI", 0x0017},
+    {"KeyO", 0x0018},
+    {"KeyP", 0x0019},
+    {"BracketLeft", 0x001A},
+    {"BracketRight", 0x001B},
+    {"Enter", 0x001C},
+    {"ControlLeft", 0x001D},
+    {"KeyA", 0x001E},
+    {"KeyS", 0x001F},
+    {"KeyD", 0x0020},
+    {"KeyF", 0x0021},
+    {"KeyG", 0x0022},
+    {"KeyH", 0x0023},
+    {"KeyJ", 0x0024},
+    {"KeyK", 0x0025},
+    {"KeyL", 0x0026},
+    {"Semicolon", 0x0027},
+    {"Quote", 0x0028},
+    {"Backquote", 0x0029},
+    {"ShiftLeft", 0x002A},
+    {"Backslash", 0x002B},
+    {"KeyZ", 0x002C},
+    {"KeyX", 0x002D},
+    {"KeyC", 0x002E},
+    {"KeyV", 0x002F},
+    {"KeyB", 0x0030},
+    {"KeyN", 0x0031},
+    {"KeyM", 0x0032},
+    {"Comma", 0x0033},
+    {"Period", 0x0034},
+    {"Slash", 0x0035},
+    {"ShiftRight", 0x0036},
+    {"NumpadMultiply", 0x0037},
+    {"AltLeft", 0x0038},
+    {"Space", 0x0039},
+    {"CapsLock", 0x003A},
+    {"F1", 0x003B},
+    {"F2", 0x003C},
+    {"F3", 0x003D},
+    {"F4", 0x003E},
+    {"F5", 0x003F},
+    {"F6", 0x0040},
+    {"F7", 0x0041},
+    {"F8", 0x0042},
+    {"F9", 0x0043},
+    {"F10", 0x0044},
+    {"NumLock", 0x0045},       // sent as 0x45; Windows itself reports it extended
+    {"ScrollLock", 0x0046},
+    {"Numpad7", 0x0047},
+    {"Numpad8", 0x0048},
+    {"Numpad9", 0x0049},
+    {"NumpadSubtract", 0x004A},
+    {"Numpad4", 0x004B},
+    {"Numpad5", 0x004C},
+    {"Numpad6", 0x004D},
+    {"NumpadAdd", 0x004E},
+    {"Numpad1", 0x004F},
+    {"Numpad2", 0x0050},
+    {"Numpad3", 0x0051},
+    {"Numpad0", 0x0052},
+    {"NumpadDecimal", 0x0053},
+    {"IntlBackslash", 0x0056},
+    {"F11", 0x0057},
+    {"F12", 0x0058},
+    {"NumpadEqual", 0x0059},
+    {"F13", 0x0064},
+    {"F14", 0x0065},
+    {"F15", 0x0066},
+    {"F16", 0x0067},
+    {"F17", 0x0068},
+    {"F18", 0x0069},
+    {"F19", 0x006A},
+    {"F20", 0x006B},
+    {"F21", 0x006C},
+    {"F22", 0x006D},
+    {"F23", 0x006E},
+    {"KanaMode", 0x0070},
+    {"Lang2", 0x0071},
+    {"Lang1", 0x0072},
+    {"IntlRo", 0x0073},
+    {"F24", 0x0076},
+    {"Lang4", 0x0077},
+    {"Lang3", 0x0078},
+    {"Convert", 0x0079},
+    {"NonConvert", 0x007B},
+    {"IntlYen", 0x007D},
+    {"NumpadComma", 0x007E},
+    {"Undo", 0xE008},
+    {"Paste", 0xE00A},
+    {"MediaTrackPrevious", 0xE010},
+    {"Cut", 0xE017},
+    {"Copy", 0xE018},
+    {"MediaTrackNext", 0xE019},
+    {"NumpadEnter", 0xE01C},
+    {"ControlRight", 0xE01D},
+    {"AudioVolumeMute", 0xE020},
+    {"LaunchApp2", 0xE021},
+    {"MediaPlayPause", 0xE022},
+    {"MediaStop", 0xE024},
+    {"Eject", 0xE02C},
+    {"VolumeDown", 0xE02E},
+    {"AudioVolumeDown", 0xE02E},
+    {"VolumeUp", 0xE030},
+    {"AudioVolumeUp", 0xE030},
+    {"BrowserHome", 0xE032},
+    {"NumpadDivide", 0xE035},
+    {"PrintScreen", 0xE037},
+    {"AltRight", 0xE038},
+    {"Help", 0xE03B},
+    {"Pause", PAUSE_KEY},      // E1 1D 45: no scancode SendInput can send, so its virtual key
+    {"Home", 0xE047},
+    {"ArrowUp", 0xE048},
+    {"PageUp", 0xE049},
+    {"ArrowLeft", 0xE04B},
+    {"ArrowRight", 0xE04D},
+    {"End", 0xE04F},
+    {"ArrowDown", 0xE050},
+    {"PageDown", 0xE051},
+    {"Insert", 0xE052},
+    {"Delete", 0xE053},
+    {"MetaLeft", 0xE05B},
+    {"OSLeft", 0xE05B},
+    {"MetaRight", 0xE05C},
+    {"OSRight", 0xE05C},
+    {"ContextMenu", 0xE05D},
+    {"Power", 0xE05E},
+    {"Sleep", 0xE05F},
+    {"WakeUp", 0xE063},
+    {"BrowserSearch", 0xE065},
+    {"BrowserFavorites", 0xE066},
+    {"BrowserRefresh", 0xE067},
+    {"BrowserStop", 0xE068},
+    {"BrowserForward", 0xE069},
+    {"BrowserBack", 0xE06A},
+    {"LaunchApp1", 0xE06B},
+    {"LaunchMail", 0xE06C},
+    {"MediaSelect", 0xE06D}
+};
+
+#elif defined(IS_MACOS)
+static const std::map<std::string, CGKeyCode> SpecialKeys = {
+    {"KeyA", kVK_ANSI_A},
+    {"KeyS", kVK_ANSI_S},
+    {"KeyD", kVK_ANSI_D},
+    {"KeyF", kVK_ANSI_F},
+    {"KeyH", kVK_ANSI_H},
+    {"KeyG", kVK_ANSI_G},
+    {"KeyZ", kVK_ANSI_Z},
+    {"KeyX", kVK_ANSI_X},
+    {"KeyC", kVK_ANSI_C},
+    {"KeyV", kVK_ANSI_V},
+    {"IntlBackslash", kVK_ISO_Section},
+    {"KeyB", kVK_ANSI_B},
+    {"KeyQ", kVK_ANSI_Q},
+    {"KeyW", kVK_ANSI_W},
+    {"KeyE", kVK_ANSI_E},
+    {"KeyR", kVK_ANSI_R},
+    {"KeyY", kVK_ANSI_Y},
+    {"KeyT", kVK_ANSI_T},
+    {"Digit1", kVK_ANSI_1},
+    {"Digit2", kVK_ANSI_2},
+    {"Digit3", kVK_ANSI_3},
+    {"Digit4", kVK_ANSI_4},
+    {"Digit6", kVK_ANSI_6},
+    {"Digit5", kVK_ANSI_5},
+    {"Equal", kVK_ANSI_Equal},
+    {"Digit9", kVK_ANSI_9},
+    {"Digit7", kVK_ANSI_7},
+    {"Minus", kVK_ANSI_Minus},
+    {"Digit8", kVK_ANSI_8},
+    {"Digit0", kVK_ANSI_0},
+    {"BracketRight", kVK_ANSI_RightBracket},
+    {"KeyO", kVK_ANSI_O},
+    {"KeyU", kVK_ANSI_U},
+    {"BracketLeft", kVK_ANSI_LeftBracket},
+    {"KeyI", kVK_ANSI_I},
+    {"KeyP", kVK_ANSI_P},
+    {"Enter", kVK_Return},
+    {"KeyL", kVK_ANSI_L},
+    {"KeyJ", kVK_ANSI_J},
+    {"Quote", kVK_ANSI_Quote},
+    {"KeyK", kVK_ANSI_K},
+    {"Semicolon", kVK_ANSI_Semicolon},
+    {"Backslash", kVK_ANSI_Backslash},
+    {"Comma", kVK_ANSI_Comma},
+    {"Slash", kVK_ANSI_Slash},
+    {"KeyN", kVK_ANSI_N},
+    {"KeyM", kVK_ANSI_M},
+    {"Period", kVK_ANSI_Period},
+    {"Tab", kVK_Tab},
+    {"Space", kVK_Space},
+    {"Backquote", kVK_ANSI_Grave},
+    {"Backspace", kVK_Delete},
+    {"Escape", kVK_Escape},
+    {"MetaRight", 0x36},
+    {"OSRight", 0x36},
+    {"MetaLeft", kVK_Command},
+    {"OSLeft", kVK_Command},
+    {"ShiftLeft", kVK_Shift},
+    {"CapsLock", kVK_CapsLock},
+    {"AltLeft", kVK_Option},
+    {"ControlLeft", kVK_Control},
+    {"ShiftRight", kVK_RightShift},
+    {"AltRight", kVK_RightOption},
+    {"ControlRight", kVK_RightControl},
+    {"Fn", kVK_Function},
+    {"F17", kVK_F17},
+    {"NumpadDecimal", kVK_ANSI_KeypadDecimal},
+    {"NumpadMultiply", kVK_ANSI_KeypadMultiply},
+    {"NumpadAdd", kVK_ANSI_KeypadPlus},
+    {"NumLock", kVK_ANSI_KeypadClear},
+    {"VolumeUp", kVK_VolumeUp},
+    {"AudioVolumeUp", kVK_VolumeUp},
+    {"VolumeDown", kVK_VolumeDown},
+    {"AudioVolumeDown", kVK_VolumeDown},
+    {"VolumeMute", kVK_Mute},
+    {"AudioVolumeMute", kVK_Mute},
+    {"NumpadDivide", kVK_ANSI_KeypadDivide},
+    {"NumpadEnter", kVK_ANSI_KeypadEnter},
+    {"NumpadSubtract", kVK_ANSI_KeypadMinus},
+    {"F18", kVK_F18},
+    {"F19", kVK_F19},
+    {"NumpadEqual", kVK_ANSI_KeypadEquals},
+    {"Numpad0", kVK_ANSI_Keypad0},
+    {"Numpad1", kVK_ANSI_Keypad1},
+    {"Numpad2", kVK_ANSI_Keypad2},
+    {"Numpad3", kVK_ANSI_Keypad3},
+    {"Numpad4", kVK_ANSI_Keypad4},
+    {"Numpad5", kVK_ANSI_Keypad5},
+    {"Numpad6", kVK_ANSI_Keypad6},
+    {"Numpad7", kVK_ANSI_Keypad7},
+    {"F20", kVK_F20},
+    {"Numpad8", kVK_ANSI_Keypad8},
+    {"Numpad9", kVK_ANSI_Keypad9},
+    {"IntlYen", kVK_JIS_Yen},
+    {"IntlRo", kVK_JIS_Underscore},
+    {"NumpadComma", kVK_JIS_KeypadComma},
+    {"F5", kVK_F5},
+    {"F6", kVK_F6},
+    {"F7", kVK_F7},
+    {"F3", kVK_F3},
+    {"F8", kVK_F8},
+    {"F9", kVK_F9},
+    {"Lang2", kVK_JIS_Eisu},
+    {"F11", kVK_F11},
+    {"Lang1", kVK_JIS_Kana},
+    {"F13", kVK_F13},
+    {"F16", kVK_F16},
+    {"F14", kVK_F14},
+    {"F10", kVK_F10},
+    {"ContextMenu", 0x6E},
+    {"F12", kVK_F12},
+    {"F15", kVK_F15},
+    {"Help", kVK_Help},
+    {"Insert", kVK_Help},
+    {"Home", kVK_Home},
+    {"PageUp", kVK_PageUp},
+    {"Delete", kVK_ForwardDelete},
+    {"F4", kVK_F4},
+    {"End", kVK_End},
+    {"F2", kVK_F2},
+    {"PageDown", kVK_PageDown},
+    {"F1", kVK_F1},
+    {"ArrowLeft", kVK_LeftArrow},
+    {"ArrowRight", kVK_RightArrow},
+    {"ArrowDown", kVK_DownArrow},
+    {"ArrowUp", kVK_UpArrow}
+};
+
+
+#elif defined(IS_LINUX)
+static const std::map<std::string, unsigned int> SpecialKeys = {
+    {"Escape", 0x0009},
+    {"Digit1", 0x000A},
+    {"Digit2", 0x000B},
+    {"Digit3", 0x000C},
+    {"Digit4", 0x000D},
+    {"Digit5", 0x000E},
+    {"Digit6", 0x000F},
+    {"Digit7", 0x0010},
+    {"Digit8", 0x0011},
+    {"Digit9", 0x0012},
+    {"Digit0", 0x0013},
+    {"Minus", 0x0014},
+    {"Equal", 0x0015},
+    {"Backspace", 0x0016},
+    {"Tab", 0x0017},
+    {"KeyQ", 0x0018},
+    {"KeyW", 0x0019},
+    {"KeyE", 0x001A},
+    {"KeyR", 0x001B},
+    {"KeyT", 0x001C},
+    {"KeyY", 0x001D},
+    {"KeyU", 0x001E},
+    {"KeyI", 0x001F},
+    {"KeyO", 0x0020},
+    {"KeyP", 0x0021},
+    {"BracketLeft", 0x0022},
+    {"BracketRight", 0x0023},
+    {"Enter", 0x0024},
+    {"ControlLeft", 0x0025},
+    {"KeyA", 0x0026},
+    {"KeyS", 0x0027},
+    {"KeyD", 0x0028},
+    {"KeyF", 0x0029},
+    {"KeyG", 0x002A},
+    {"KeyH", 0x002B},
+    {"KeyJ", 0x002C},
+    {"KeyK", 0x002D},
+    {"KeyL", 0x002E},
+    {"Semicolon", 0x002F},
+    {"Quote", 0x0030},
+    {"Backquote", 0x0031},
+    {"ShiftLeft", 0x0032},
+    {"Backslash", 0x0033},
+    {"KeyZ", 0x0034},
+    {"KeyX", 0x0035},
+    {"KeyC", 0x0036},
+    {"KeyV", 0x0037},
+    {"KeyB", 0x0038},
+    {"KeyN", 0x0039},
+    {"KeyM", 0x003A},
+    {"Comma", 0x003B},
+    {"Period", 0x003C},
+    {"Slash", 0x003D},
+    {"ShiftRight", 0x003E},
+    {"NumpadMultiply", 0x003F},
+    {"AltLeft", 0x0040},
+    {"Space", 0x0041},
+    {"CapsLock", 0x0042},
+    {"F1", 0x0043},
+    {"F2", 0x0044},
+    {"F3", 0x0045},
+    {"F4", 0x0046},
+    {"F5", 0x0047},
+    {"F6", 0x0048},
+    {"F7", 0x0049},
+    {"F8", 0x004A},
+    {"F9", 0x004B},
+    {"F10", 0x004C},
+    {"NumLock", 0x004D},
+    {"ScrollLock", 0x004E},
+    {"Numpad7", 0x004F},
+    {"Numpad8", 0x0050},
+    {"Numpad9", 0x0051},
+    {"NumpadSubtract", 0x0052},
+    {"Numpad4", 0x0053},
+    {"Numpad5", 0x0054},
+    {"Numpad6", 0x0055},
+    {"NumpadAdd", 0x0056},
+    {"Numpad1", 0x0057},
+    {"Numpad2", 0x0058},
+    {"Numpad3", 0x0059},
+    {"Numpad0", 0x005A},
+    {"NumpadDecimal", 0x005B},
+    {"Lang5", 0x005D},
+    {"IntlBackslash", 0x005E},
+    {"F11", 0x005F},
+    {"F12", 0x0060},
+    {"IntlRo", 0x0061},
+    {"Lang3", 0x0062},
+    {"Lang4", 0x0063},
+    {"Convert", 0x0064},
+    {"KanaMode", 0x0065},
+    {"NonConvert", 0x0066},
+    {"NumpadEnter", 0x0068},
+    {"ControlRight", 0x0069},
+    {"NumpadDivide", 0x006A},
+    {"PrintScreen", 0x006B},
+    {"AltRight", 0x006C},
+    {"Home", 0x006E},
+    {"ArrowUp", 0x006F},
+    {"PageUp", 0x0070},
+    {"ArrowLeft", 0x0071},
+    {"ArrowRight", 0x0072},
+    {"End", 0x0073},
+    {"ArrowDown", 0x0074},
+    {"PageDown", 0x0075},
+    {"Insert", 0x0076},
+    {"Delete", 0x0077},
+    {"VolumeMute", 0x0079},
+    {"AudioVolumeMute", 0x0079},
+    {"VolumeDown", 0x007A},
+    {"AudioVolumeDown", 0x007A},
+    {"VolumeUp", 0x007B},
+    {"AudioVolumeUp", 0x007B},
+    {"Power", 0x007C},
+    {"NumpadEqual", 0x007D},
+    {"Pause", 0x007F},
+    {"NumpadComma", 0x0081},
+    {"Lang1", 0x0082},
+    {"Lang2", 0x0083},
+    {"IntlYen", 0x0084},
+    {"MetaLeft", 0x0085},
+    {"OSLeft", 0x0085},
+    {"MetaRight", 0x0086},
+    {"OSRight", 0x0086},
+    {"ContextMenu", 0x0087},
+    {"BrowserStop", 0x0088},
+    {"Abort", 0x0088},
+    {"Again", 0x0089},
+    {"Props", 0x008A},
+    {"Undo", 0x008B},
+    {"Select", 0x008C},
+    {"Copy", 0x008D},
+    {"Open", 0x008E},
+    {"Paste", 0x008F},
+    {"Find", 0x0090},
+    {"Cut", 0x0091},
+    {"Help", 0x0092},
+    {"LaunchApp2", 0x0094},
+    {"Sleep", 0x0096},
+    {"WakeUp", 0x0097},
+    {"LaunchApp1", 0x0098},
+    {"LaunchMail", 0x00A3},
+    {"BrowserFavorites", 0x00A4},
+    {"BrowserBack", 0x00A6},
+    {"BrowserForward", 0x00A7},
+    {"Eject", 0x00A9},
+    {"MediaTrackNext", 0x00AB},
+    {"MediaPlayPause", 0x00AC},
+    {"MediaTrackPrevious", 0x00AD},
+    {"MediaStop", 0x00AE},
+    {"MediaSelect", 0x00B3},
+    {"BrowserHome", 0x00B4},
+    {"BrowserRefresh", 0x00B5},
+    {"NumpadParenLeft", 0x00BB},
+    {"NumpadParenRight", 0x00BC},
+    {"F13", 0x00BF},
+    {"F14", 0x00C0},
+    {"F15", 0x00C1},
+    {"F16", 0x00C2},
+    {"F17", 0x00C3},
+    {"F18", 0x00C4},
+    {"F19", 0x00C5},
+    {"F20", 0x00C6},
+    {"F21", 0x00C7},
+    {"F22", 0x00C8},
+    {"F23", 0x00C9},
+    {"F24", 0x00CA},
+    {"BrowserSearch", 0x00E1}
+};
+
+#endif
+
+
+// reads the one non-empty string argument, or throws and returns false
+static bool ParseKey(const Napi::CallbackInfo& info, std::string& key) {
+    Napi::Env env = info.Env();
+    if (info.Length() < 1) {
+        Napi::TypeError::New(env, "Expected 1 argument").ThrowAsJavaScriptException();
+        return false;
+    }
+    if (!info[0].IsString()) {
+        Napi::TypeError::New(env, "Expected string argument").ThrowAsJavaScriptException();
+        return false;
+    }
+    key = info[0].As<Napi::String>().Utf8Value();
+    if (key.length() == 0) {
+        Napi::TypeError::New(env, "Expected non empty string").ThrowAsJavaScriptException();
+        return false;
+    }
+    return true;
+}
+
+
+#if defined(IS_WINDOWS)
+// a key press or release by scan code, so it does not depend on the layout
+static INPUT ScanCodeInput(WORD code, bool isUp) {
+    INPUT input = {0};
+    input.type = INPUT_KEYBOARD;
+    if (code == PAUSE_KEY) {
+        input.ki.wVk = VK_PAUSE;
+        input.ki.dwFlags = isUp ? KEYEVENTF_KEYUP : 0;
+        return input;
+    }
+    input.ki.wVk = 0;
+    input.ki.wScan = code & 0xFF;
+    input.ki.dwFlags = KEYEVENTF_SCANCODE;
+    if ((code & 0xFF00) == 0xE000) {
+        // the E0 prefix byte is a flag, not part of wScan
+        input.ki.dwFlags |= KEYEVENTF_EXTENDEDKEY;
+    }
+    if (isUp) {
+        input.ki.dwFlags |= KEYEVENTF_KEYUP;
+    }
+    return input;
+}
+
+#elif defined(IS_MACOS)
+// The modifier keys, each with the event flags it sets while held: the
+// device-independent mask and the left/right one (NX_DEVICE*KEYMASK).
+struct ModifierKey {
+    CGKeyCode keycode;
+    CGEventFlags mask;
+    CGEventFlags deviceMask;
+};
+static const ModifierKey ModifierKeys[] = {
+    {kVK_Control,      kCGEventFlagMaskControl,     0x00000001},
+    {kVK_Shift,        kCGEventFlagMaskShift,       0x00000002},
+    {kVK_RightShift,   kCGEventFlagMaskShift,       0x00000004},
+    {kVK_Command,      kCGEventFlagMaskCommand,     0x00000008},
+    {0x36,             kCGEventFlagMaskCommand,     0x00000010},    // right command
+    {kVK_Option,       kCGEventFlagMaskAlternate,   0x00000020},
+    {kVK_RightOption,  kCGEventFlagMaskAlternate,   0x00000040},
+    {kVK_RightControl, kCGEventFlagMaskControl,     0x00002000},
+    {kVK_Function,     kCGEventFlagMaskSecondaryFn, 0}
+};
+
+// modifier keys held now, a bit per ModifierKeys entry
+static uint32_t heldModifiers = 0;
+static bool isCapsLockOn = false;
+
+static int ModifierIndex(CGKeyCode keycode) {
+    for (size_t i = 0; i < sizeof(ModifierKeys) / sizeof(ModifierKeys[0]); i++) {
+        if (ModifierKeys[i].keycode == keycode) {
+            return (int)i;
+        }
+    }
+    return -1;
+}
+
+static void UpdateModifierFlags() {
+    CGEventFlags flags = 0;
+    for (size_t i = 0; i < sizeof(ModifierKeys) / sizeof(ModifierKeys[0]); i++) {
+        if (heldModifiers & (1u << i)) {
+            flags |= ModifierKeys[i].mask | ModifierKeys[i].deviceMask;
+        }
+    }
+    if (isCapsLockOn) {
+        flags |= kCGEventFlagMaskAlphaShift;
+    }
+    ModifierFlags() = flags;
+}
+
+// posts a key press or release; a modifier key goes as a flags-changed event
+// and is remembered, so later key and mouse events carry it
+static bool PostKey(CGKeyCode keycode, bool isDown) {
+    const int modifier = ModifierIndex(keycode);
+    if (modifier >= 0) {
+        if (isDown) {
+            heldModifiers |= (1u << modifier);
+        } else {
+            heldModifiers &= ~(1u << modifier);
+        }
+        UpdateModifierFlags();
+    } else if (keycode == kVK_CapsLock && isDown) {
+        isCapsLockOn = !isCapsLockOn;
+        UpdateModifierFlags();
+    }
+
+    CGEventRef event = CGEventCreateKeyboardEvent(EventSource(), keycode, isDown);
+    if (event == NULL) {
+        return false;
+    }
+    if (modifier >= 0 || keycode == kVK_CapsLock) {
+        CGEventSetType(event, kCGEventFlagsChanged);
+    }
+    CGEventSetFlags(event, ModifierFlags());
+    CGEventPost(kCGHIDEventTap, event);
+    CFRelease(event);
+    return true;
+}
+
+#elif defined(IS_LINUX)
+// Throws when there is no X display to talk to; returns it otherwise.
+static Display* RequireDisplay(Napi::Env env) {
+    Display* display = XGetMainDisplay();
+    if (display == NULL) {
+        Napi::Error::New(env, "Failed to open X display").ThrowAsJavaScriptException();
+    }
+    return display;
+}
+
+// the X11 keysym of a Unicode code point
+static KeySym CodepointToKeysym(uint32_t codepoint) {
+    switch (codepoint) {
+        case '\n':
+        case '\r':
+            return XK_Return;
+        case '\t':
+            return XK_Tab;
+        case '\b':
+            return XK_BackSpace;
+        case 0x1B:
+            return XK_Escape;
+    }
+    // Latin-1 keysyms equal their code point; the rest are 0x01000000 + it
+    if ((codepoint >= 0x20 && codepoint <= 0x7E) || (codepoint >= 0xA0 && codepoint <= 0xFF)) {
+        return codepoint;
+    }
+    return 0x01000000 | codepoint;
+}
+
+// UTF-8 -> code points, skipping malformed bytes
+static std::vector<uint32_t> DecodeUtf8(const std::string& text) {
+    std::vector<uint32_t> codepoints;
+    const size_t length = text.length();
+    for (size_t i = 0; i < length; ) {
+        const unsigned char c = text[i];
+        int bytes = 0;
+        uint32_t codepoint = 0;
+        if (c < 0x80) {
+            bytes = 1;
+            codepoint = c;
+        } else if ((c & 0xE0) == 0xC0) {
+            bytes = 2;
+            codepoint = c & 0x1F;
+        } else if ((c & 0xF0) == 0xE0) {
+            bytes = 3;
+            codepoint = c & 0x0F;
+        } else if ((c & 0xF8) == 0xF0) {
+            bytes = 4;
+            codepoint = c & 0x07;
+        } else {
+            i++;
+            continue;
+        }
+        if (i + bytes > length) {
+            break;
+        }
+        bool isValid = true;
+        for (int b = 1; b < bytes; b++) {
+            const unsigned char next = text[i + b];
+            if ((next & 0xC0) != 0x80) {
+                isValid = false;
+                break;
+            }
+            codepoint = (codepoint << 6) | (next & 0x3F);
+        }
+        if (isValid) {
+            codepoints.push_back(codepoint);
+            i += bytes;
+        } else {
+            i++;
+        }
+    }
+    return codepoints;
+}
+
+// keycodes the keymap leaves empty, which type() borrows for characters the
+// layout cannot produce
+static std::vector<KeyCode> SpareKeycodes(Display* display) {
+    std::vector<KeyCode> spare;
+    int minKeycode = 0;
+    int maxKeycode = 0;
+    XDisplayKeycodes(display, &minKeycode, &maxKeycode);
+    int keysymsPerKeycode = 0;
+    KeySym* keysyms = XGetKeyboardMapping(display, minKeycode, maxKeycode - minKeycode + 1, &keysymsPerKeycode);
+    if (keysyms == NULL) {
+        return spare;
+    }
+    for (int keycode = maxKeycode; keycode >= minKeycode; keycode--) {
+        bool isEmpty = true;
+        for (int i = 0; i < keysymsPerKeycode; i++) {
+            if (keysyms[(keycode - minKeycode) * keysymsPerKeycode + i] != NoSymbol) {
+                isEmpty = false;
+                break;
+            }
+        }
+        if (isEmpty) {
+            spare.push_back((KeyCode)keycode);
+        }
+    }
+    XFree(keysyms);
+    return spare;
+}
+#endif
+
+
+static void PressKey(const Napi::CallbackInfo& info, bool isDown) {
+    Napi::Env env = info.Env();
+    std::string key;
+    if (!ParseKey(info, key)) {
+        return;
+    }
+
+    auto it = SpecialKeys.find(key);
+    if (it == SpecialKeys.end()) {
+        Napi::Error::New(env, "Key not supported").ThrowAsJavaScriptException();
+        return;
+    }
+
+    #if defined(IS_WINDOWS)
+        INPUT input = ScanCodeInput(it->second, !isDown);
+        SendInput(1, &input, sizeof(INPUT));
+
+    #elif defined(IS_MACOS)
+        if (!PostKey(it->second, isDown)) {
+            Napi::Error::New(env, isDown ? "Failed to create key down event" : "Failed to create key up event").ThrowAsJavaScriptException();
+            return;
+        }
+
+    #elif defined(IS_LINUX)
+        if (IsWaylandSession()) {
+            // the table holds X keycodes, which are the evdev codes plus 8
+            std::string error;
+            if (!VirtualInput::KeyboardKey((unsigned short)(it->second - 8), isDown, error)) {
+                Napi::Error::New(env, error).ThrowAsJavaScriptException();
+            }
+            return;
+        }
+        Display *display = RequireDisplay(env);
+        if (display == NULL) {
+            return;
+        }
+        XTestFakeKeyEvent(display, it->second, isDown ? True : False, CurrentTime);
+        XFlush(display);
+    #endif
+}
+
+void Keyboard::keyDown(const Napi::CallbackInfo& info) {
+    PressKey(info, true);
+}
+
+void Keyboard::keyUp(const Napi::CallbackInfo& info) {
+    PressKey(info, false);
+}
+
+Napi::Boolean Keyboard::isKeySupported(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    std::string key;
+    if (!ParseKey(info, key)) {
+        return Napi::Boolean::New(env, false);
+    }
+    auto it = SpecialKeys.find(key);
+    return Napi::Boolean::New(env, it != SpecialKeys.end() && it->second != 0);
+}
+
+void Keyboard::type(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    std::string text;
+    if (!ParseKey(info, text)) {
+        return;
+    }
+
+    #if defined(IS_WINDOWS)
+        int wideSize = MultiByteToWideChar(CP_UTF8, 0, text.c_str(), (int)text.length(), NULL, 0);
+        if (wideSize <= 0) {
+            Napi::Error::New(env, "Failed to convert text").ThrowAsJavaScriptException();
+            return;
+        }
+        std::wstring wide(wideSize, L'\0');
+        MultiByteToWideChar(CP_UTF8, 0, text.c_str(), (int)text.length(), &wide[0], wideSize);
+
+        // a press and a release per UTF-16 unit; a surrogate pair goes as its
+        // two units in a row, which Windows puts back together
+        std::vector<INPUT> inputs;
+        inputs.reserve(wide.length() * 2);
+        for (wchar_t unit : wide) {
+            INPUT input = {0};
+            input.type = INPUT_KEYBOARD;
+            input.ki.wVk = 0;
+            input.ki.wScan = unit;
+            input.ki.dwFlags = KEYEVENTF_UNICODE;
+            inputs.push_back(input);
+            input.ki.dwFlags = KEYEVENTF_UNICODE | KEYEVENTF_KEYUP;
+            inputs.push_back(input);
+        }
+        SendInput((UINT)inputs.size(), inputs.data(), sizeof(INPUT));
+
+    #elif defined(IS_MACOS)
+        // Convert UTF-8 string to UTF-16 for macOS
+        CFStringRef cfString = CFStringCreateWithCString(kCFAllocatorDefault, text.c_str(), kCFStringEncodingUTF8);
+        if (cfString == NULL) {
+            Napi::Error::New(env, "Failed to convert string to CFString").ThrowAsJavaScriptException();
+            return;
+        }
+
+        CFIndex length = CFStringGetLength(cfString);
+
+        // Type each character; a surrogate pair goes in one event
+        for (CFIndex i = 0; i < length; ) {
+            UniChar characters[2];
+            characters[0] = CFStringGetCharacterAtIndex(cfString, i);
+            UniCharCount count = 1;
+            if (CFStringIsSurrogateHighCharacter(characters[0]) && i + 1 < length) {
+                characters[1] = CFStringGetCharacterAtIndex(cfString, i + 1);
+                if (CFStringIsSurrogateLowCharacter(characters[1])) {
+                    count = 2;
+                }
+            }
+            i += count;
+
+            // Create a Unicode keyboard event
+            CGEventRef keyDownEvent = CGEventCreateKeyboardEvent(EventSource(), 0, true);
+            CGEventRef keyUpEvent = CGEventCreateKeyboardEvent(EventSource(), 0, false);
+
+            if (keyDownEvent == NULL || keyUpEvent == NULL) {
+                if (keyDownEvent != NULL) CFRelease(keyDownEvent);
+                if (keyUpEvent != NULL) CFRelease(keyUpEvent);
+                CFRelease(cfString);
+                Napi::Error::New(env, "Failed to create keyboard event").ThrowAsJavaScriptException();
+                return;
+            }
+
+            // the text is typed as it is, without the modifiers held down
+            CGEventSetFlags(keyDownEvent, 0);
+            CGEventSetFlags(keyUpEvent, 0);
+
+            // Set the Unicode character for the event
+            CGEventKeyboardSetUnicodeString(keyDownEvent, count, characters);
+            CGEventKeyboardSetUnicodeString(keyUpEvent, count, characters);
+
+            // Post the events
+            CGEventPost(kCGHIDEventTap, keyDownEvent);
+            CGEventPost(kCGHIDEventTap, keyUpEvent);
+
+            // Release the events
+            CFRelease(keyDownEvent);
+            CFRelease(keyUpEvent);
+        }
+
+        CFRelease(cfString);
+
+    #elif defined(IS_LINUX)
+        Display *display = XGetMainDisplay();
+        if (display == NULL) {
+            Napi::Error::New(env, IsWaylandSession()
+                ? "Typing text on Wayland needs XWayland, to read the keyboard layout from"
+                : "Failed to open X display").ThrowAsJavaScriptException();
+            return;
+        }
+
+        XkbStateRec state;
+        int group = 0;
+        if (XkbGetState(display, XkbUseCoreKbd, &state) == Success) {
+            group = state.group;
+        }
+
+        if (IsWaylandSession()) {
+            // The keys go through the virtual keyboard, so they reach every
+            // application; which key makes which character is read from
+            // XWayland's copy of the compositor's layout. A character that
+            // layout has no key for cannot be typed: the compositor's keymap
+            // is not the client's to change.
+            std::string missing;
+            for (uint32_t codepoint : DecodeUtf8(text)) {
+                const KeySym keysym = CodepointToKeysym(codepoint);
+                const KeyCode keycode = XKeysymToKeycode(display, keysym);
+                int level = -1;
+                if (keycode != 0) {
+                    if (XkbKeycodeToKeysym(display, keycode, group, 0) == keysym) {
+                        level = 0;
+                    } else if (XkbKeycodeToKeysym(display, keycode, group, 1) == keysym) {
+                        level = 1;
+                    }
+                }
+                if (level < 0) {
+                    char hex[16];
+                    snprintf(hex, sizeof(hex), "%sU+%04X", missing.empty() ? "" : ", ", codepoint);
+                    missing += hex;
+                    continue;
+                }
+
+                // X keycodes are the evdev codes plus 8
+                const unsigned short key = (unsigned short)(keycode - 8);
+                std::string error;
+                bool isDone = true;
+                if (level == 1) {
+                    isDone = VirtualInput::KeyboardKey(KEY_LEFTSHIFT, true, error);
+                }
+                isDone = isDone && VirtualInput::KeyboardKey(key, true, error)
+                    && VirtualInput::KeyboardKey(key, false, error);
+                if (level == 1) {
+                    std::string releaseError;
+                    VirtualInput::KeyboardKey(KEY_LEFTSHIFT, false, releaseError);
+                }
+                if (!isDone) {
+                    Napi::Error::New(env, error).ThrowAsJavaScriptException();
+                    return;
+                }
+            }
+            if (!missing.empty()) {
+                Napi::Error::New(env, "Not on the current keyboard layout, not typed: " + missing).ThrowAsJavaScriptException();
+            }
+            return;
+        }
+
+        const KeyCode shiftKeycode = XKeysymToKeycode(display, XK_Shift_L);
+
+        // characters the layout has no key for are put on a spare keycode for
+        // the duration of the call, as xdotool does
+        std::vector<KeyCode> spare;
+        bool isSpareRead = false;
+        std::vector<std::pair<KeySym, KeyCode>> borrowed;
+
+        for (uint32_t codepoint : DecodeUtf8(text)) {
+            const KeySym keysym = CodepointToKeysym(codepoint);
+
+            // the key for it in the current layout, and whether Shift is needed
+            KeyCode keycode = XKeysymToKeycode(display, keysym);
+            bool isShift = false;
+            if (keycode != 0) {
+                if (XkbKeycodeToKeysym(display, keycode, group, 0) == keysym) {
+                    isShift = false;
+                } else if (XkbKeycodeToKeysym(display, keycode, group, 1) == keysym && shiftKeycode != 0) {
+                    isShift = true;
+                } else {
+                    keycode = 0;    // only in another group or level
+                }
+            }
+
+            if (keycode == 0) {
+                for (const auto& entry : borrowed) {
+                    if (entry.first == keysym) {
+                        keycode = entry.second;
+                        break;
+                    }
+                }
+            }
+            if (keycode == 0) {
+                if (!isSpareRead) {
+                    spare = SpareKeycodes(display);
+                    isSpareRead = true;
+                }
+                if (borrowed.size() >= spare.size()) {
+                    continue;   // no key left to put it on
+                }
+                keycode = spare[borrowed.size()];
+                KeySym keysyms[2] = {keysym, keysym};
+                XChangeKeyboardMapping(display, keycode, 2, keysyms, 1);
+                XSync(display, False);
+                borrowed.push_back(std::make_pair(keysym, keycode));
+            }
+
+            if (isShift) {
+                XTestFakeKeyEvent(display, shiftKeycode, True, CurrentTime);
+            }
+            XTestFakeKeyEvent(display, keycode, True, CurrentTime);
+            XTestFakeKeyEvent(display, keycode, False, CurrentTime);
+            if (isShift) {
+                XTestFakeKeyEvent(display, shiftKeycode, False, CurrentTime);
+            }
+        }
+        XSync(display, False);
+
+        // give the borrowed keys back, once the clients have had the events
+        if (!borrowed.empty()) {
+            usleep(25000);
+            for (const auto& entry : borrowed) {
+                KeySym keysyms[2] = {NoSymbol, NoSymbol};
+                XChangeKeyboardMapping(display, entry.second, 2, keysyms, 1);
+            }
+            XSync(display, False);
+        }
+    #endif
+}
+
+#if defined(IS_WINDOWS)
+// the KLID ("00000409", ...) of a keyboard layout handle
+static std::wstring LayoutName(HKL hkl) {
+    const DWORD value = (DWORD)(UINT_PTR)hkl;
+    const WORD language = LOWORD(value);
+    const WORD device = HIWORD(value);
+    wchar_t name[KL_NAMELENGTH];
+
+    if ((device & 0xF000) == 0xE000) {
+        // an input method: the handle is the KLID
+        swprintf(name, KL_NAMELENGTH, L"%08X", value);
+        return name;
+    }
+    if ((device & 0xF000) != 0xF000) {
+        // the layout is the device word (0 = the language's default layout)
+        swprintf(name, KL_NAMELENGTH, L"%08X", (DWORD)(device != 0 ? device : language));
+        return name;
+    }
+
+    // a layout variant: its "Layout Id" is in the low bits of the device word,
+    // and the KLID is the registry key holding that id
+    const WORD layoutId = device & 0x0FFF;
+    HKEY layouts;
+    if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\Keyboard Layouts", 0, KEY_READ, &layouts) == ERROR_SUCCESS) {
+        wchar_t klid[KL_NAMELENGTH + 8];
+        for (DWORD index = 0; ; index++) {
+            DWORD klidLength = sizeof(klid) / sizeof(klid[0]);
+            if (RegEnumKeyExW(layouts, index, klid, &klidLength, NULL, NULL, NULL, NULL) != ERROR_SUCCESS) {
+                break;
+            }
+            wchar_t id[16];
+            DWORD idSize = sizeof(id);
+            if (RegGetValueW(layouts, klid, L"Layout Id", RRF_RT_REG_SZ, NULL, id, &idSize) == ERROR_SUCCESS &&
+                wcstoul(id, NULL, 16) == layoutId) {
+                RegCloseKey(layouts);
+                return klid;
+            }
+        }
+        RegCloseKey(layouts);
+    }
+    swprintf(name, KL_NAMELENGTH, L"%08X", (DWORD)language);
+    return name;
+}
+#elif defined(IS_LINUX)
+// the keyboard's layout (group) names; NULL, after throwing, when unavailable
+static XkbDescPtr GetGroupNames(Napi::Env env, Display* display) {
+    XkbDescPtr kbd = XkbAllocKeyboard();
+    if (kbd == NULL) {
+        Napi::Error::New(env, "Failed to get keyboard descriptor").ThrowAsJavaScriptException();
+        return NULL;
+    }
+    if (XkbGetNames(display, XkbGroupNamesMask, kbd) != Success || kbd->names == NULL) {
+        XkbFreeKeyboard(kbd, 0, True);
+        Napi::Error::New(env, "No keyboard layouts available").ThrowAsJavaScriptException();
+        return NULL;
+    }
+    return kbd;
+}
+#endif
+
+Napi::String Keyboard::GetLayout(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+
+    #if defined(IS_WINDOWS)
+        // the layout of the window the input goes to, not of this thread
+        HWND foreground = GetForegroundWindow();
+        DWORD threadId = foreground != NULL ? GetWindowThreadProcessId(foreground, NULL) : 0;
+        HKL hkl = GetKeyboardLayout(threadId);
+        std::wstring layoutName;
+        if (hkl != NULL) {
+            layoutName = LayoutName(hkl);
+        } else {
+            wchar_t name[KL_NAMELENGTH];
+            if (!GetKeyboardLayoutNameW(name)) {
+                Napi::Error::New(env, "Failed to get keyboard layout").ThrowAsJavaScriptException();
+                return Napi::String::New(env, "");
+            }
+            layoutName = name;
+        }
+        return Napi::String::New(env, std::u16string(layoutName.begin(), layoutName.end()));
+
+    #elif defined(IS_MACOS)
+        // Get the current keyboard input source
+        TISInputSourceRef currentSource = TISCopyCurrentKeyboardInputSource();
+        if (currentSource == NULL) {
+            Napi::Error::New(env, "Failed to get current input source").ThrowAsJavaScriptException();
+            return Napi::String::New(env, "");
+        }
+
+        // Get the source ID (e.g., "com.apple.keylayout.US")
+        CFStringRef sourceID = (CFStringRef)TISGetInputSourceProperty(currentSource, kTISPropertyInputSourceID);
+
+        std::string layout = "";
+        if (sourceID != NULL) {
+            // Convert CFString to C++ string
+            CFIndex length = CFStringGetLength(sourceID);
+            CFIndex maxSize = CFStringGetMaximumSizeForEncoding(length, kCFStringEncodingUTF8) + 1;
+            std::vector<char> buffer(maxSize);
+            if (CFStringGetCString(sourceID, buffer.data(), maxSize, kCFStringEncodingUTF8)) {
+                layout = std::string(buffer.data());
+            }
+        }
+
+        CFRelease(currentSource);
+        return Napi::String::New(env, layout);
+
+    #elif defined(IS_LINUX)
+        Display *display = RequireDisplay(env);
+        if (display == NULL) {
+            return Napi::String::New(env, "");
+        }
+
+        // Get the XKB state
+        XkbStateRec state;
+        if (XkbGetState(display, XkbUseCoreKbd, &state) != Success) {
+            Napi::Error::New(env, "Failed to get keyboard state").ThrowAsJavaScriptException();
+            return Napi::String::New(env, "");
+        }
+
+        XkbDescPtr kbd = GetGroupNames(env, display);
+        if (kbd == NULL) {
+            return Napi::String::New(env, "");
+        }
+
+        std::string layout = "";
+        Atom groupName = kbd->names->groups[state.group];
+        if (groupName != None) {
+            char* layoutName = XGetAtomName(display, groupName);
+            if (layoutName != NULL) {
+                layout = layoutName;
+                XFree(layoutName);
+            }
+        }
+
+        XkbFreeKeyboard(kbd, 0, True);
+        return Napi::String::New(env, layout);
+    #endif
+}
+
+void Keyboard::SetLayout(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    std::string layout;
+    if (!ParseKey(info, layout)) {
+        return;
+    }
+
+    #if defined(IS_WINDOWS)
+        HKL hkl = LoadKeyboardLayoutW(std::wstring(layout.begin(), layout.end()).c_str(), KLF_ACTIVATE);
+        if (hkl == NULL) {
+            Napi::Error::New(env, "Failed to set keyboard layout").ThrowAsJavaScriptException();
+            return;
+        }
+        // ask the window the input goes to to switch; Windows answers the
+        // request with WM_INPUTLANGCHANGE itself
+        PostMessageW(GetForegroundWindow(), WM_INPUTLANGCHANGEREQUEST, 0, (LPARAM)hkl);
+
+    #elif defined(IS_MACOS)
+        // Convert C++ string to CFString
+        CFStringRef layoutID = CFStringCreateWithCString(kCFAllocatorDefault, layout.c_str(), kCFStringEncodingUTF8);
+        if (layoutID == NULL) {
+            Napi::Error::New(env, "Failed to create CFString from layout").ThrowAsJavaScriptException();
+            return;
+        }
+
+        // Create a dictionary to filter input sources by ID
+        CFMutableDictionaryRef filter = CFDictionaryCreateMutable(kCFAllocatorDefault, 1,
+            &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+        CFDictionarySetValue(filter, kTISPropertyInputSourceID, layoutID);
+
+        // Get the list of input sources matching the filter
+        CFArrayRef inputSources = TISCreateInputSourceList(filter, false);
+
+        CFRelease(filter);
+        CFRelease(layoutID);
+
+        if (inputSources == NULL || CFArrayGetCount(inputSources) == 0) {
+            if (inputSources != NULL) CFRelease(inputSources);
+            Napi::Error::New(env, "Layout not found").ThrowAsJavaScriptException();
+            return;
+        }
+
+        // Get the first matching input source
+        TISInputSourceRef inputSource = (TISInputSourceRef)CFArrayGetValueAtIndex(inputSources, 0);
+
+        // Select the input source
+        OSStatus status = TISSelectInputSource(inputSource);
+
+        CFRelease(inputSources);
+
+        if (status != noErr) {
+            Napi::Error::New(env, "Failed to set keyboard layout").ThrowAsJavaScriptException();
+            return;
+        }
+
+    #elif defined(IS_LINUX)
+        if (IsWaylandSession()) {
+            // the compositor owns the layout, and every desktop has its own
+            // settings for it (GNOME, KDE, sway, ...); XWayland's copy would
+            // change for X clients only
+            Napi::Error::New(env, "Setting the keyboard layout is not supported on Wayland").ThrowAsJavaScriptException();
+            return;
+        }
+        Display *display = RequireDisplay(env);
+        if (display == NULL) {
+            return;
+        }
+
+        XkbDescPtr kbd = GetGroupNames(env, display);
+        if (kbd == NULL) {
+            return;
+        }
+
+        // Find the layout group index by name
+        int targetGroup = -1;
+        for (int i = 0; i < XkbNumKbdGroups; i++) {
+            if (kbd->names->groups[i] != None) {
+                char* groupName = XGetAtomName(display, kbd->names->groups[i]);
+                if (groupName != NULL) {
+                    const bool isMatch = (layout == groupName);
+                    XFree(groupName);
+                    if (isMatch) {
+                        targetGroup = i;
+                        break;
+                    }
+                }
+            }
+        }
+        XkbFreeKeyboard(kbd, 0, True);
+
+        if (targetGroup == -1) {
+            Napi::Error::New(env, "Layout not found").ThrowAsJavaScriptException();
+            return;
+        }
+
+        // Lock to the target group (layout)
+        XkbLockGroup(display, XkbUseCoreKbd, targetGroup);
+        XFlush(display);
+    #endif
+}
+
+Napi::Object Keyboard::Init(Napi::Env env, Napi::Object exports) {
+    Napi::Object obj = Napi::Object::New(env);
+    obj.Set(Napi::String::New(env, "keyDown"), Napi::Function::New(env, Keyboard::keyDown));
+    obj.Set(Napi::String::New(env, "keyUp"), Napi::Function::New(env, Keyboard::keyUp));
+    obj.Set(Napi::String::New(env, "isKeySupported"), Napi::Function::New(env, Keyboard::isKeySupported));
+    obj.Set(Napi::String::New(env, "type"), Napi::Function::New(env, Keyboard::type));
+    obj.Set(Napi::String::New(env, "GetLayout"), Napi::Function::New(env, Keyboard::GetLayout));
+    obj.Set(Napi::String::New(env, "SetLayout"), Napi::Function::New(env, Keyboard::SetLayout));
+    return obj;
+}

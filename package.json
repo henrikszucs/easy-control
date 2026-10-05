@@ -35,6 +35,7 @@
     ],
     "scripts": {
         "build": "node index.js",
+        "build:js": "node src/build.js",
         "test": "node dev/test.js",
         "clean": "node index.js -- --uninstall"
     },
@@ -53,6 +54,7 @@
         "dist"
     ],
     "devDependencies": {
+        "esbuild": "^0.28.2",
         "node-addon-api": "^8.5.0",
         "node-gyp": "^11.0.0"
     }

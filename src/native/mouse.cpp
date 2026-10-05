@@ -1,0 +1,820 @@
+#include "mouse.h"
+#include "platform.h"
+
+#include <algorithm>
+#include <cmath>
+#include <cstring>
+#include <string>
+#include <vector>
+
+#if defined(IS_MACOS)
+    #include <ApplicationServices/ApplicationServices.h>
+    #import <AppKit/AppKit.h>
+#elif defined(IS_LINUX)
+    #include "uinput.h"
+    #include "wayland.h"
+    #include <mutex>
+    #include <linux/input-event-codes.h>
+    #include <X11/Xlib.h>
+    #include <X11/extensions/XTest.h>
+    #include <X11/extensions/Xfixes.h>
+#endif
+
+
+// the cursor picture handed to JS: RGBA, a byte per channel, row by row from the top
+struct CursorPicture {
+    int width = 0;
+    int height = 0;
+    int xOffset = 0;
+    int yOffset = 0;
+    std::vector<uint8_t> rgba;
+};
+
+static Napi::Object CursorToObject(Napi::Env env, const CursorPicture& picture) {
+    Napi::Uint8Array data = Napi::Uint8Array::New(env, picture.rgba.size());
+    if (!picture.rgba.empty()) {
+        memcpy(data.Data(), picture.rgba.data(), picture.rgba.size());
+    }
+    Napi::Object result = Napi::Object::New(env);
+    result.Set("width", picture.width);
+    result.Set("height", picture.height);
+    result.Set("data", data);
+    result.Set("xOffset", picture.xOffset);
+    result.Set("yOffset", picture.yOffset);
+    return result;
+}
+
+#if defined(IS_MACOS)
+// FNV-1a, to fingerprint a cursor picture where the platform has no cheaper id
+static uint32_t HashBytes(const uint8_t* bytes, size_t length, uint32_t hash = 2166136261u) {
+    for (size_t i = 0; i < length; i++) {
+        hash ^= bytes[i];
+        hash *= 16777619u;
+    }
+    return hash;
+}
+#endif
+
+// reads the button name argument, or throws and returns false
+static bool ParseButton(const Napi::CallbackInfo& info, std::string& button) {
+    Napi::Env env = info.Env();
+    if (info.Length() < 1) {
+        Napi::TypeError::New(env, "Expected 1 argument").ThrowAsJavaScriptException();
+        return false;
+    }
+    if (!info[0].IsString()) {
+        Napi::TypeError::New(env, "Expected string argument").ThrowAsJavaScriptException();
+        return false;
+    }
+    button = info[0].As<Napi::String>().Utf8Value();
+    if (button != "left" &&
+        button != "middle" &&
+        button != "right" &&
+        button != "back" &&
+        button != "forward") {
+        Napi::TypeError::New(env, "Expected 'left', 'middle', 'right', 'back', or 'forward'").ThrowAsJavaScriptException();
+        return false;
+    }
+    return true;
+}
+
+// reads the scroll arguments, or throws and returns false
+static bool ParseScroll(const Napi::CallbackInfo& info, int& amount, bool& isHorizontal) {
+    Napi::Env env = info.Env();
+    if (info.Length() < 2) {
+        Napi::TypeError::New(env, "Expected 2 argument").ThrowAsJavaScriptException();
+        return false;
+    }
+    if (!info[0].IsNumber()) {
+        Napi::TypeError::New(env, "Expected number in 1st argument").ThrowAsJavaScriptException();
+        return false;
+    }
+    if (!info[1].IsBoolean()) {
+        Napi::TypeError::New(env, "Expected boolean 2nd argument").ThrowAsJavaScriptException();
+        return false;
+    }
+    amount = info[0].As<Napi::Number>().Int32Value();
+    isHorizontal = info[1].As<Napi::Boolean>().Value();
+    return true;
+}
+
+#if defined(IS_LINUX)
+// Throws when there is no X display to talk to; returns it otherwise.
+static Display* RequireDisplay(Napi::Env env) {
+    Display* display = XGetMainDisplay();
+    if (display == NULL) {
+        Napi::Error::New(env, "Failed to open X display").ThrowAsJavaScriptException();
+    }
+    return display;
+}
+
+// Wayland tells no client where the pointer is, so the position is the one
+// last set through easy-control (valid once isPointerSet)
+static std::mutex pointerMutex;
+static bool isPointerSet = false;
+static double pointerX = 0;
+static double pointerY = 0;
+
+// Throws with the reason when the virtual device could not be used.
+static void ThrowIfFailed(Napi::Env env, bool isDone, const std::string& error) {
+    if (!isDone) {
+        Napi::Error::New(env, error).ThrowAsJavaScriptException();
+    }
+}
+#endif
+
+
+// the pointer position in logical coordinates (see Screen.list)
+static bool GetPosition(double& x, double& y) {
+    #if defined(IS_WINDOWS)
+        DpiScope dpiScope;
+        POINT point;
+        if (!GetCursorPos(&point)) {
+            return false;
+        }
+        PhysicalToLogical(point, x, y);
+        return true;
+
+    #elif defined(IS_MACOS)
+        CGEventRef event = CGEventCreate(NULL);
+        if (event == NULL) {
+            return false;
+        }
+        CGPoint cursor = CGEventGetLocation(event);
+        CFRelease(event);
+        x = cursor.x;
+        y = cursor.y;
+        return true;
+
+    #elif defined(IS_LINUX)
+        if (IsWaylandSession()) {
+            std::lock_guard<std::mutex> lock(pointerMutex);
+            if (isPointerSet) {
+                x = pointerX;
+                y = pointerY;
+                return true;
+            }
+            // not moved yet: XWayland's idea of it is the best there is
+        }
+        Display *display = XGetMainDisplay();
+        if (display == NULL) {
+            return false;
+        }
+        Window root = DefaultRootWindow(display);
+        Window window_returned;
+        int root_x, root_y;
+        int win_x, win_y;
+        unsigned int mask_return;
+        XQueryPointer(display, root, &window_returned,
+            &window_returned, &root_x, &root_y,
+            &win_x, &win_y, &mask_return);
+        x = root_x;
+        y = root_y;
+        return true;
+    #endif
+}
+
+// moves the pointer to logical coordinates (see Screen.list)
+static void MoveTo(Napi::Env env, double x, double y) {
+    #if defined(IS_WINDOWS)
+        DpiScope dpiScope;
+        POINT point = LogicalToPhysical(x, y);
+        SetCursorPos(point.x, point.y);
+
+    #elif defined(IS_MACOS)
+        // posted as an event, not warped, so applications see the move (and a
+        // drag while a button is held)
+        CGEventType eventType = kCGEventMouseMoved;
+        CGMouseButton mouseButton = kCGMouseButtonLeft;
+        const uint32_t pressed = PressedButtons();
+        if (pressed & (1u << kCGMouseButtonLeft)) {
+            eventType = kCGEventLeftMouseDragged;
+        } else if (pressed & (1u << kCGMouseButtonRight)) {
+            eventType = kCGEventRightMouseDragged;
+            mouseButton = kCGMouseButtonRight;
+        } else if (pressed != 0) {
+            eventType = kCGEventOtherMouseDragged;
+            for (uint32_t b = 2; b < 32; b++) {
+                if (pressed & (1u << b)) {
+                    mouseButton = (CGMouseButton)b;
+                    break;
+                }
+            }
+        }
+        CGEventRef moveEvent = CGEventCreateMouseEvent(EventSource(), eventType, CGPointMake(x, y), mouseButton);
+        if (moveEvent == NULL) {
+            Napi::Error::New(env, "Failed to create mouse event").ThrowAsJavaScriptException();
+            return;
+        }
+        CGEventSetFlags(moveEvent, ModifierFlags());
+        CGEventPost(kCGHIDEventTap, moveEvent);
+        CFRelease(moveEvent);
+
+    #elif defined(IS_LINUX)
+        if (IsWaylandSession()) {
+            // the virtual pointer is absolute over the bounding box of all
+            // screens, which is how compositors map such a device
+            std::vector<ScreenRect> screens = ListScreens();
+            if (screens.empty()) {
+                Napi::Error::New(env, "No screen to move the pointer on").ThrowAsJavaScriptException();
+                return;
+            }
+            int left = screens[0].x;
+            int top = screens[0].y;
+            int right = screens[0].x + screens[0].width;
+            int bottom = screens[0].y + screens[0].height;
+            for (const ScreenRect& screen : screens) {
+                left = std::min(left, screen.x);
+                top = std::min(top, screen.y);
+                right = std::max(right, screen.x + screen.width);
+                bottom = std::max(bottom, screen.y + screen.height);
+            }
+            const double clampedX = std::min(std::max(x, (double)left), (double)right - 1);
+            const double clampedY = std::min(std::max(y, (double)top), (double)bottom - 1);
+
+            std::string error;
+            const bool isDone = VirtualInput::PointerMoveTo(
+                (clampedX - left) / (right - left), (clampedY - top) / (bottom - top), error);
+            if (isDone) {
+                std::lock_guard<std::mutex> lock(pointerMutex);
+                isPointerSet = true;
+                pointerX = clampedX;
+                pointerY = clampedY;
+            }
+            ThrowIfFailed(env, isDone, error);
+            return;
+        }
+        Display *display = RequireDisplay(env);
+        if (display == NULL) {
+            return;
+        }
+        Window root = DefaultRootWindow(display);
+        XWarpPointer(display, None, root, 0, 0, 0, 0, (int)std::lround(x), (int)std::lround(y));
+        XFlush(display);
+    #endif
+}
+
+
+Napi::Number Mouse::getX(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    double x = 0;
+    double y = 0;
+    GetPosition(x, y);
+    return Napi::Number::New(env, x);
+}
+
+Napi::Number Mouse::getY(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    double x = 0;
+    double y = 0;
+    GetPosition(x, y);
+    return Napi::Number::New(env, y);
+}
+
+
+// reads the current cursor picture; false (and an empty picture) when there
+// is none to read, e.g. the pointer is hidden
+static bool ReadCursor(CursorPicture& picture) {
+    #if defined(IS_WINDOWS)
+        // Get information about the global cursor.
+        CURSORINFO ci;
+        ci.cbSize = sizeof(ci);
+        if (!GetCursorInfo(&ci) || ci.hCursor == NULL) {
+            return false;
+        }
+
+        // Get icon information to determine actual size
+        ICONINFO iconInfo;
+        if (!GetIconInfo(ci.hCursor, &iconInfo)) {
+            return false;
+        }
+
+        // Get bitmap dimensions
+        BITMAP bmp;
+        if (GetObject(iconInfo.hbmColor ? iconInfo.hbmColor : iconInfo.hbmMask, sizeof(BITMAP), &bmp) == 0) {
+            if (iconInfo.hbmColor) DeleteObject(iconInfo.hbmColor);
+            if (iconInfo.hbmMask) DeleteObject(iconInfo.hbmMask);
+            return false;
+        }
+        int width = bmp.bmWidth;
+        int height = iconInfo.hbmColor ? bmp.bmHeight : bmp.bmHeight / 2;
+
+        HDC hdcScreen = GetDC(NULL);
+        picture.rgba.resize((size_t)width * height * 4);
+        uint8_t* out = picture.rgba.data();
+
+        // Setup the Bitmap Info Header to pull 32-bit BGRA data
+        BITMAPINFO bmi = {0};
+        const auto resetHeader = [&bmi, width](int rows) {
+            memset(&bmi, 0, sizeof(bmi));
+            bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+            bmi.bmiHeader.biWidth = width;
+            bmi.bmiHeader.biHeight = -rows; // Negative means top-down
+            bmi.bmiHeader.biPlanes = 1;
+            bmi.bmiHeader.biBitCount = 32;    // Enforce 32-bit (BGRA) output
+            bmi.bmiHeader.biCompression = BI_RGB;
+        };
+
+        if (iconInfo.hbmColor) {
+            // Buffer for Color Bitmap
+            std::vector<uint8_t> colorPixels((size_t)width * height * 4);
+            resetHeader(height);
+            GetDIBits(hdcScreen, iconInfo.hbmColor, 0, height, colorPixels.data(), &bmi, DIB_RGB_COLORS);
+
+            // Buffer for Mask Bitmap (fallback in case color has no alpha)
+            std::vector<uint8_t> maskPixels((size_t)width * height * 4);
+            resetHeader(height);
+            GetDIBits(hdcScreen, iconInfo.hbmMask, 0, height, maskPixels.data(), &bmi, DIB_RGB_COLORS);
+
+            // Check if the color bitmap actually utilizes the alpha channel
+            bool hasAlphaChannel = false;
+            for (int i = 0; i < width * height; i++) {
+                if (colorPixels[i * 4 + 3] != 0) { // Alpha byte
+                    hasAlphaChannel = true;
+                    break;
+                }
+            }
+
+            for (int i = 0; i < width * height; i++) {
+                uint8_t b = colorPixels[i * 4 + 0];
+                uint8_t g = colorPixels[i * 4 + 1];
+                uint8_t r = colorPixels[i * 4 + 2];
+                uint8_t a = colorPixels[i * 4 + 3];
+
+                if (!hasAlphaChannel) {
+                    // Windows masks: if mask pixel is white (255), the pixel is transparent.
+                    // If mask pixel is black (0), the pixel is drawn.
+                    uint8_t maskVal = maskPixels[i * 4 + 0]; // Any channel will do, it's grayscale
+                    a = (maskVal == 0) ? 255 : 0;
+
+                    // Clear rgb if transparent
+                    if (a == 0) r = g = b = 0;
+                }
+
+                out[i * 4 + 0] = r;
+                out[i * 4 + 1] = g;
+                out[i * 4 + 2] = b;
+                out[i * 4 + 3] = a;
+            }
+        }
+        else {
+            // Monochrome cursors (e.g. text I-beam) do not have hbmColor.
+            // The top half of hbmMask is the AND mask, bottom half is XOR mask.
+            std::vector<uint8_t> maskPixels((size_t)width * (height * 2) * 4);
+            resetHeader(height * 2); // Full height containing both masks
+            GetDIBits(hdcScreen, iconInfo.hbmMask, 0, height * 2, maskPixels.data(), &bmi, DIB_RGB_COLORS);
+
+            for (int i = 0; i < width * height; i++) {
+                // Top half is AND mask
+                uint8_t maskVal = maskPixels[i * 4 + 0];
+                // Bottom half is XOR mask
+                uint8_t xorVal = maskPixels[(i + width * height) * 4 + 0];
+
+                uint8_t r = 0, g = 0, b = 0, a = 255;
+                if (maskVal == 255 && xorVal == 0) {
+                    a = 0; // Transparent
+                } else if (maskVal == 0 && xorVal == 0) {
+                    r = g = b = 0; // Black
+                } else if (maskVal == 0 && xorVal == 255) {
+                    r = g = b = 255; // White
+                } else if (maskVal == 255 && xorVal == 255) {
+                    // Inverted pixel (used for I-beam). We treat it as inverted grey or contrasting color.
+                    r = g = b = 128;
+                }
+
+                out[i * 4 + 0] = r;
+                out[i * 4 + 1] = g;
+                out[i * 4 + 2] = b;
+                out[i * 4 + 3] = a;
+            }
+        }
+
+        ReleaseDC(NULL, hdcScreen);
+
+        // Clean up icon info
+        if (iconInfo.hbmColor) DeleteObject(iconInfo.hbmColor);
+        if (iconInfo.hbmMask) DeleteObject(iconInfo.hbmMask);
+
+        picture.width = width;
+        picture.height = height;
+        picture.xOffset = iconInfo.xHotspot;
+        picture.yOffset = iconInfo.yHotspot;
+        return true;
+
+    #elif defined(IS_MACOS)
+        // Get the current cursor
+        NSCursor *cursor = [NSCursor currentSystemCursor];
+        if (cursor == nil) {
+            return false;
+        }
+
+        NSImage *image = [cursor image];
+        NSPoint hotspot = [cursor hotSpot];
+        if (image == nil) {
+            return false;
+        }
+
+        NSSize size = [image size];
+        int width = (int)size.width;
+        int height = (int)size.height;
+        if (width <= 0 || height <= 0) {
+            return false;
+        }
+
+        // Create a bitmap representation
+        NSBitmapImageRep *bitmap = [[NSBitmapImageRep alloc]
+            initWithBitmapDataPlanes:NULL
+            pixelsWide:width
+            pixelsHigh:height
+            bitsPerSample:8
+            samplesPerPixel:4
+            hasAlpha:YES
+            isPlanar:NO
+            colorSpaceName:NSDeviceRGBColorSpace
+            bytesPerRow:width * 4
+            bitsPerPixel:32];
+        if (bitmap == nil) {
+            return false;
+        }
+
+        // Draw the image into the bitmap
+        [NSGraphicsContext saveGraphicsState];
+        [NSGraphicsContext setCurrentContext:[NSGraphicsContext graphicsContextWithBitmapImageRep:bitmap]];
+        [image drawInRect:NSMakeRect(0, 0, width, height)];
+        [NSGraphicsContext restoreGraphicsState];
+
+        // Pixel data is already RGBA, row by row from the top
+        unsigned char *bitmapData = [bitmap bitmapData];
+        if (bitmapData == NULL) {
+            return false;
+        }
+        picture.rgba.assign(bitmapData, bitmapData + (size_t)width * height * 4);
+        picture.width = width;
+        picture.height = height;
+        picture.xOffset = (int)hotspot.x;
+        picture.yOffset = (int)hotspot.y;
+        return true;
+
+    #elif defined(IS_LINUX)
+        Display *display = XGetMainDisplay();
+        if (display == NULL) {
+            return false;
+        }
+
+        // Query the cursor image using XFixes extension
+        XFixesCursorImage *cursorImage = XFixesGetCursorImage(display);
+        if (cursorImage == NULL) {
+            return false;
+        }
+
+        int width = cursorImage->width;
+        int height = cursorImage->height;
+        picture.rgba.resize((size_t)width * height * 4);
+        uint8_t* out = picture.rgba.data();
+
+        // XFixes cursor pixels are ARGB, one per unsigned long
+        for (int i = 0; i < width * height; i++) {
+            unsigned long pixel = cursorImage->pixels[i];
+            out[i * 4 + 0] = (uint8_t)((pixel >> 16) & 0xFF); // R
+            out[i * 4 + 1] = (uint8_t)((pixel >> 8) & 0xFF);  // G
+            out[i * 4 + 2] = (uint8_t)(pixel & 0xFF);         // B
+            out[i * 4 + 3] = (uint8_t)((pixel >> 24) & 0xFF); // A
+        }
+
+        picture.width = width;
+        picture.height = height;
+        picture.xOffset = cursorImage->xhot;
+        picture.yOffset = cursorImage->yhot;
+        XFree(cursorImage);
+        return true;
+    #endif
+}
+
+Napi::Object Mouse::getIcon(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    CursorPicture picture;
+    if (!ReadCursor(picture)) {
+        picture = CursorPicture();
+    }
+    return CursorToObject(env, picture);
+}
+
+// A number that changes when the pointer's shape changes, and 0 while there is
+// no shape to read (hidden pointer). Cheap on Windows and Linux, so it can be
+// polled and getIcon called only when it changes; on macOS it is a hash of the
+// picture, so it costs about as much as getIcon itself.
+Napi::Number Mouse::getIconId(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+
+    #if defined(IS_WINDOWS)
+        CURSORINFO ci;
+        ci.cbSize = sizeof(ci);
+        if (!GetCursorInfo(&ci) || !(ci.flags & CURSOR_SHOWING) || ci.hCursor == NULL) {
+            return Napi::Number::New(env, 0);
+        }
+        // handles are 32-bit significant, so the value is exact as a JS number
+        return Napi::Number::New(env, (double)(uint32_t)(uintptr_t)ci.hCursor);
+
+    #elif defined(IS_MACOS)
+        CursorPicture picture;
+        if (!ReadCursor(picture)) {
+            return Napi::Number::New(env, 0);
+        }
+        int32_t header[4] = {picture.width, picture.height, picture.xOffset, picture.yOffset};
+        uint32_t hash = HashBytes(reinterpret_cast<const uint8_t*>(header), sizeof(header));
+        hash = HashBytes(picture.rgba.data(), picture.rgba.size(), hash);
+        return Napi::Number::New(env, hash == 0 ? 1 : hash);
+
+    #elif defined(IS_LINUX)
+        // XFixes numbers every cursor shape it hands out (cursor_serial) and
+        // notifies each change; after the first call only those notifications
+        // are read, the picture is not fetched again
+        static bool isSelected = false;
+        static int fixesEventBase = 0;
+        static unsigned long serial = 0;
+
+        Display *display = XGetMainDisplay();
+        if (display == NULL) {
+            return Napi::Number::New(env, 0);
+        }
+        if (!isSelected) {
+            int errorBase = 0;
+            if (!XFixesQueryExtension(display, &fixesEventBase, &errorBase)) {
+                return Napi::Number::New(env, 0);
+            }
+            XFixesSelectCursorInput(display, DefaultRootWindow(display), XFixesDisplayCursorNotifyMask);
+            XFixesCursorImage *cursorImage = XFixesGetCursorImage(display);
+            if (cursorImage != NULL) {
+                serial = cursorImage->cursor_serial;
+                XFree(cursorImage);
+            }
+            isSelected = true;
+        }
+        XEvent event;
+        while (XCheckTypedEvent(display, fixesEventBase + XFixesCursorNotify, &event)) {
+            serial = reinterpret_cast<XFixesCursorNotifyEvent*>(&event)->cursor_serial;
+        }
+        return Napi::Number::New(env, (double)serial);
+    #endif
+}
+
+
+// reads a coordinate argument, or throws and returns false
+static bool ParseCoordinate(const Napi::CallbackInfo& info, size_t index, double& value) {
+    Napi::Env env = info.Env();
+    if (info.Length() <= index) {
+        Napi::TypeError::New(env, "Expected " + std::to_string(index + 1) + " argument").ThrowAsJavaScriptException();
+        return false;
+    }
+    if (!info[index].IsNumber()) {
+        Napi::TypeError::New(env, "Expected number argument").ThrowAsJavaScriptException();
+        return false;
+    }
+    value = info[index].As<Napi::Number>().DoubleValue();
+    if (!std::isfinite(value)) {
+        Napi::TypeError::New(env, "Expected finite number argument").ThrowAsJavaScriptException();
+        return false;
+    }
+    return true;
+}
+
+void Mouse::setX(const Napi::CallbackInfo& info) {
+    double x = 0;
+    if (!ParseCoordinate(info, 0, x)) {
+        return;
+    }
+    double currentX = 0;
+    double currentY = 0;
+    GetPosition(currentX, currentY);
+    MoveTo(info.Env(), x, currentY);
+}
+
+void Mouse::setY(const Napi::CallbackInfo& info) {
+    double y = 0;
+    if (!ParseCoordinate(info, 0, y)) {
+        return;
+    }
+    double currentX = 0;
+    double currentY = 0;
+    GetPosition(currentX, currentY);
+    MoveTo(info.Env(), currentX, y);
+}
+
+void Mouse::setPosition(const Napi::CallbackInfo& info) {
+    double x = 0;
+    double y = 0;
+    if (!ParseCoordinate(info, 0, x) || !ParseCoordinate(info, 1, y)) {
+        return;
+    }
+    MoveTo(info.Env(), x, y);
+}
+
+
+static void PressButton(const Napi::CallbackInfo& info, bool isDown) {
+    Napi::Env env = info.Env();
+    std::string button;
+    if (!ParseButton(info, button)) {
+        return;
+    }
+
+    #if defined(IS_WINDOWS)
+        INPUT input = {0};
+        input.type = INPUT_MOUSE;
+
+        if (button == "left") {
+            input.mi.dwFlags = isDown ? MOUSEEVENTF_LEFTDOWN : MOUSEEVENTF_LEFTUP;
+        } else if (button == "right") {
+            input.mi.dwFlags = isDown ? MOUSEEVENTF_RIGHTDOWN : MOUSEEVENTF_RIGHTUP;
+        } else if (button == "middle") {
+            input.mi.dwFlags = isDown ? MOUSEEVENTF_MIDDLEDOWN : MOUSEEVENTF_MIDDLEUP;
+        } else if (button == "back") {
+            input.mi.dwFlags = isDown ? MOUSEEVENTF_XDOWN : MOUSEEVENTF_XUP;
+            input.mi.mouseData = XBUTTON1;
+        } else if (button == "forward") {
+            input.mi.dwFlags = isDown ? MOUSEEVENTF_XDOWN : MOUSEEVENTF_XUP;
+            input.mi.mouseData = XBUTTON2;
+        }
+
+        SendInput(1, &input, sizeof(INPUT));
+
+    #elif defined(IS_MACOS)
+        CGEventRef event = CGEventCreate(NULL);
+        CGPoint cursor = CGEventGetLocation(event);
+        CFRelease(event);
+
+        CGEventType eventType = isDown ? kCGEventLeftMouseDown : kCGEventLeftMouseUp;
+        CGMouseButton mouseButton = kCGMouseButtonLeft;
+
+        if (button == "right") {
+            eventType = isDown ? kCGEventRightMouseDown : kCGEventRightMouseUp;
+            mouseButton = kCGMouseButtonRight;
+        } else if (button == "middle") {
+            eventType = isDown ? kCGEventOtherMouseDown : kCGEventOtherMouseUp;
+            mouseButton = kCGMouseButtonCenter;
+        } else if (button == "back") {
+            eventType = isDown ? kCGEventOtherMouseDown : kCGEventOtherMouseUp;
+            mouseButton = (CGMouseButton)3; // Back button
+        } else if (button == "forward") {
+            eventType = isDown ? kCGEventOtherMouseDown : kCGEventOtherMouseUp;
+            mouseButton = (CGMouseButton)4; // Forward button
+        }
+
+        CGEventRef mouseEvent = CGEventCreateMouseEvent(EventSource(), eventType, cursor, mouseButton);
+        if (mouseEvent == NULL) {
+            Napi::Error::New(env, "Failed to create mouse event").ThrowAsJavaScriptException();
+            return;
+        }
+        CGEventSetFlags(mouseEvent, ModifierFlags());
+        CGEventPost(kCGHIDEventTap, mouseEvent);
+        CFRelease(mouseEvent);
+
+        if (isDown) {
+            PressedButtons() |= (1u << mouseButton);
+        } else {
+            PressedButtons() &= ~(1u << mouseButton);
+        }
+
+    #elif defined(IS_LINUX)
+        if (IsWaylandSession()) {
+            unsigned short code = BTN_LEFT;
+            if (button == "middle") {
+                code = BTN_MIDDLE;
+            } else if (button == "right") {
+                code = BTN_RIGHT;
+            } else if (button == "back") {
+                code = BTN_SIDE;
+            } else if (button == "forward") {
+                code = BTN_EXTRA;
+            }
+            std::string error;
+            ThrowIfFailed(env, VirtualInput::PointerButton(code, isDown, error), error);
+            return;
+        }
+        Display *display = RequireDisplay(env);
+        if (display == NULL) {
+            return;
+        }
+
+        unsigned int xButton = Button1;
+        if (button == "middle") {
+            xButton = Button2;
+        } else if (button == "right") {
+            xButton = Button3;
+        } else if (button == "back") {
+            xButton = 8; // X11 back button
+        } else if (button == "forward") {
+            xButton = 9; // X11 forward button
+        }
+
+        XTestFakeButtonEvent(display, xButton, isDown ? True : False, CurrentTime);
+        XFlush(display);
+    #endif
+}
+
+void Mouse::buttonDown(const Napi::CallbackInfo& info) {
+    PressButton(info, true);
+}
+
+void Mouse::buttonUp(const Napi::CallbackInfo& info) {
+    PressButton(info, false);
+}
+
+
+// scrolls `amount` notches: isForward = down (vertical) or right (horizontal)
+static void Scroll(const Napi::CallbackInfo& info, bool isForward) {
+    Napi::Env env = info.Env();
+    int amount = 0;
+    bool isHorizontal = false;
+    if (!ParseScroll(info, amount, isHorizontal)) {
+        return;
+    }
+
+    #if defined(IS_WINDOWS)
+        INPUT input = {0};
+        input.type = INPUT_MOUSE;
+
+        if (isHorizontal) {
+            // Horizontal wheel: positive tilts right, negative left
+            input.mi.dwFlags = MOUSEEVENTF_HWHEEL;
+            input.mi.mouseData = (isForward ? amount : -amount) * WHEEL_DELTA;
+        } else {
+            // Vertical wheel: positive rotates away from the user (scrolls up)
+            input.mi.dwFlags = MOUSEEVENTF_WHEEL;
+            input.mi.mouseData = (isForward ? -amount : amount) * WHEEL_DELTA;
+        }
+
+        SendInput(1, &input, sizeof(INPUT));
+
+    #elif defined(IS_MACOS)
+        // wheel 1 is vertical (positive up), wheel 2 horizontal (positive left)
+        const int32_t delta = isForward ? -amount : amount;
+        CGEventRef scrollEvent = isHorizontal
+            ? CGEventCreateScrollWheelEvent(EventSource(), kCGScrollEventUnitLine, 2, 0, delta)
+            : CGEventCreateScrollWheelEvent(EventSource(), kCGScrollEventUnitLine, 1, delta);
+        if (scrollEvent == NULL) {
+            Napi::Error::New(env, "Failed to create scroll event").ThrowAsJavaScriptException();
+            return;
+        }
+        CGEventSetFlags(scrollEvent, ModifierFlags());
+        CGEventPost(kCGHIDEventTap, scrollEvent);
+        CFRelease(scrollEvent);
+
+    #elif defined(IS_LINUX)
+        if (IsWaylandSession()) {
+            if (amount <= 0) {
+                return;
+            }
+            // REL_WHEEL counts up as positive, REL_HWHEEL right
+            std::string error;
+            const bool isDone = isHorizontal
+                ? VirtualInput::PointerScroll(REL_HWHEEL, isForward ? amount : -amount, error)
+                : VirtualInput::PointerScroll(REL_WHEEL, isForward ? -amount : amount, error);
+            ThrowIfFailed(env, isDone, error);
+            return;
+        }
+        Display *display = RequireDisplay(env);
+        if (display == NULL) {
+            return;
+        }
+
+        // buttons 4/5 scroll up/down, 6/7 left/right
+        unsigned int button = isHorizontal ? (isForward ? 7 : 6) : (isForward ? 5 : 4);
+
+        // Simulate multiple scroll events based on amount
+        for (int i = 0; i < amount; i++) {
+            XTestFakeButtonEvent(display, button, True, CurrentTime);
+            XTestFakeButtonEvent(display, button, False, CurrentTime);
+        }
+
+        XFlush(display);
+    #endif
+}
+
+void Mouse::scrollDown(const Napi::CallbackInfo& info) {
+    Scroll(info, true);
+}
+
+void Mouse::scrollUp(const Napi::CallbackInfo& info) {
+    Scroll(info, false);
+}
+
+
+Napi::Object Mouse::Init(Napi::Env env, Napi::Object exports) {
+    Napi::Object obj = Napi::Object::New(env);
+    obj.Set(Napi::String::New(env, "getX"), Napi::Function::New(env, Mouse::getX));
+    obj.Set(Napi::String::New(env, "getY"), Napi::Function::New(env, Mouse::getY));
+
+    obj.Set(Napi::String::New(env, "getIcon"), Napi::Function::New(env, Mouse::getIcon));
+    obj.Set(Napi::String::New(env, "getIconId"), Napi::Function::New(env, Mouse::getIconId));
+
+    obj.Set(Napi::String::New(env, "setX"), Napi::Function::New(env, Mouse::setX));
+    obj.Set(Napi::String::New(env, "setY"), Napi::Function::New(env, Mouse::setY));
+    obj.Set(Napi::String::New(env, "setPosition"), Napi::Function::New(env, Mouse::setPosition));
+
+    obj.Set(Napi::String::New(env, "buttonDown"), Napi::Function::New(env, Mouse::buttonDown));
+    obj.Set(Napi::String::New(env, "buttonUp"), Napi::Function::New(env, Mouse::buttonUp));
+
+    obj.Set(Napi::String::New(env, "scrollDown"), Napi::Function::New(env, Mouse::scrollDown));
+    obj.Set(Napi::String::New(env, "scrollUp"), Napi::Function::New(env, Mouse::scrollUp));
+    return obj;
+}

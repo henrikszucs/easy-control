@@ -52,30 +52,34 @@ const build = async () => {
     }
 
     // copy built files
-    process.stdout.write("Coping built files...    ");
+    process.stdout.write("Copying built files...   ");
     //await fs.rm("./dist/", { "recursive": true, "force": true });   // for dev
     await fs.mkdir("./dist/" + os.platform() + "-" + os.arch() + "/", { "recursive": true });
 
-    await fs.copyFile("./src/easy-control.cjs", "./dist/easy-control.cjs");
-    await fs.copyFile("./src/easy-control.mjs", "./dist/easy-control.mjs");
-    
     if (os.platform() === "win32") {
         await fs.copyFile("./build/Release/easy-control.node", "./dist/" + os.platform() + "-" + os.arch() + "/easy-control.node");
         const deps = [
-            "./src/inc/ViGEm/lib/ViGEmClient.dll", "./dist/" + os.platform() + "-" + os.arch() + "/ViGEmClient.dll",
-            "./src/inc/ViGEm/lib/ViGEmClient.lib", "./dist/" + os.platform() + "-" + os.arch() + "/ViGEmClient.lib",
-            "./src/inc/ViGEm/lib/ViGEmClient.LICENSE", "./dist/" + os.platform() + "-" + os.arch() + "/ViGEmClient.LICENSE"
+            "./src/native/inc/ViGEm/lib/ViGEmClient.dll", "./dist/" + os.platform() + "-" + os.arch() + "/ViGEmClient.dll",
+            "./src/native/inc/ViGEm/lib/ViGEmClient.lib", "./dist/" + os.platform() + "-" + os.arch() + "/ViGEmClient.lib",
+            "./src/native/inc/ViGEm/lib/ViGEmClient.LICENSE", "./dist/" + os.platform() + "-" + os.arch() + "/ViGEmClient.LICENSE"
         ];
         for (let i = 0; i < deps.length; i += 2) {
-            await fs.cp(deps[i], deps[i + 1]), { "recursive": true };
+            await fs.cp(deps[i], deps[i + 1], { "recursive": true });
         }
     } else if (os.platform() === "darwin") {
         await fs.copyFile("./build/Release/easy-control.node", "./dist/" + os.platform() + "-" + os.arch() + "/easy-control.node");
-        await fs.copyFile("./build/Release/GamepadImplement.a", "./dist/" + os.platform() + "-" + os.arch() + "/GamepadImplement.a");
-        await fs.copyFile("./build/Release/nothing.a", "./dist/" + os.platform() + "-" + os.arch() + "/nothing.a");
+        // the Swift code is linked into the .node now; drop the libraries
+        // earlier builds needed beside it
+        for (const stale of ["GamepadImplement.a", "nothing.a"]) {
+            await fs.rm("./dist/" + os.platform() + "-" + os.arch() + "/" + stale, { "force": true });
+        }
     } else if (os.platform() === "linux") {
         await fs.copyFile("./build/Release/easy-control.node", "./dist/" + os.platform() + "-" + os.arch() + "/easy-control.node");
     }
+    process.stdout.write("done\n");
+
+    // minify the JS loaders into dist
+    await import("./src/build.js");
 
     // test environment copy
     /*
@@ -93,8 +97,6 @@ const build = async () => {
             await fs.cp(fileSrc, fileDest), { "recursive": true };
         }
     }*/
-
-    process.stdout.write("done\n");
 };
 
 
