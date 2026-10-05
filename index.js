@@ -63,7 +63,8 @@ const build = async () => {
         await fs.copyFile("./build/Release/easy-control.node", "./dist/" + os.platform() + "-" + os.arch() + "/easy-control.node");
         const deps = [
             "./src/inc/ViGEm/lib/ViGEmClient.dll", "./dist/" + os.platform() + "-" + os.arch() + "/ViGEmClient.dll",
-            "./src/inc/ViGEm/lib/ViGEmClient.lib", "./dist/" + os.platform() + "-" + os.arch() + "/ViGEmClient.lib"
+            "./src/inc/ViGEm/lib/ViGEmClient.lib", "./dist/" + os.platform() + "-" + os.arch() + "/ViGEmClient.lib",
+            "./src/inc/ViGEm/lib/ViGEmClient.LICENSE", "./dist/" + os.platform() + "-" + os.arch() + "/ViGEmClient.LICENSE"
         ];
         for (let i = 0; i < deps.length; i += 2) {
             await fs.cp(deps[i], deps[i + 1]), { "recursive": true };

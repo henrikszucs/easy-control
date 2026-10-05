@@ -1,6 +1,7 @@
 {
     "name": "easy-control",
-    "version": "0.8.6",
+    "version": "0.9.0",
+    "private": true,
     "description": "Simple and easy to use node.js module to simulate mouse, keyboard and controller input for Windows, MacOS and Linux.",
     "keywords": [
         "GUI",
@@ -20,7 +21,7 @@
         "macos",
         "linux"
     ],
-    "license": "GPL-2.0 license",
+    "license": "LGPL-3.0-only",
     "repository": {
         "type": "git",
         "url": "https://github.com/henrikszucs/easy-control"
@@ -33,16 +34,26 @@
         }
     ],
     "scripts": {
-        "install" : "npm install -g node-gyp",
         "build": "node index.js",
         "test": "node dev/test.js",
-        "uninstall": "node index.js -- --uninstall"
+        "clean": "node index.js -- --uninstall"
     },
     "type": "module",
+    "gypfile": false,
+    "main": "./dist/easy-control.cjs",
+    "module": "./dist/easy-control.mjs",
     "exports": {
-        ".": "./dist/easy-control.cjs"
+        ".": {
+            "import": "./dist/easy-control.mjs",
+            "require": "./dist/easy-control.cjs"
+        },
+        "./package.json": "./package.json"
     },
-    "dependencies": {
-        "node-addon-api": "^8.5.0"
+    "files": [
+        "dist"
+    ],
+    "devDependencies": {
+        "node-addon-api": "^8.5.0",
+        "node-gyp": "^11.0.0"
     }
 }

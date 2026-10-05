@@ -36,7 +36,7 @@ const icon = Mouse.getIcon();
 {
     "width": 32,        // icon width
     "height": 32,       // icon height
-    "data": [0,1,2...], // image in argb data
+    "data": [0,1,2...], // image in rgba data, row by row from the top
     "xOffset": 0,       // pointer X offset from icon
     "yOffset": 0        // pointer Y offset from icon
 }
@@ -184,9 +184,11 @@ npm install
 npm run build
 ```
 
-### Uninstall
+`npm install` brings `node-gyp` and `node-addon-api` in as dev dependencies, so neither has to be installed globally.
+
+### Clean
 ```
-npm run uninstall
+npm run clean
 ```
 
 > [!CAUTION]
@@ -197,7 +199,6 @@ npm run uninstall
 - install Visual Studio [https://visualstudio.microsoft.com/vs/community/](https://visualstudio.microsoft.com/vs/community/) and select "Desktop development with C++" bundle
 - install Python 3.6+ [https://apps.microsoft.com/detail/9ncvdn91xzqp](https://apps.microsoft.com/detail/9ncvdn91xzqp)
 - install CMake [https://cmake.org/download/](https://cmake.org/download/)
-- ```npm install -g node-gyp```
 
 #### MacOS
 - install Xcode [https://apps.apple.com/us/app/xcode/id497799835](https://apps.apple.com/us/app/xcode/id497799835)
@@ -206,3 +207,8 @@ npm run uninstall
 - ```sudo apt-get install libx11-dev libxtst-dev libxfixes-dev libxrandr-dev libpng-dev zlib1g-dev```
 
 
+## License
+
+[LGPL-3.0-only](./LICENSE) — see also the referenced [GPL-3.0](./LICENSE.GPL-3.0).
+
+The Windows build bundles [ViGEmClient](https://github.com/nefarius/ViGEmClient) (`dist/win32-x64/ViGEmClient.dll`), MIT License, Copyright (c) 2017-2019 Nefarius Software Solutions e.U. and Contributors; its notice ships beside it as `dist/win32-x64/ViGEmClient.LICENSE`.
