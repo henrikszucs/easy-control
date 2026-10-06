@@ -9,6 +9,7 @@
 #include <string>
 
 #include <dlfcn.h>
+#include <poll.h>
 
 
 bool IsWaylandSession() {
@@ -57,6 +58,14 @@ struct WlApi {
     void* (*displayConnect)(const char*);
     void (*displayDisconnect)(void*);
     int (*displayRoundtrip)(void*);
+    // reading what has arrived without waiting; all null when the library
+    // lacks them (then every call makes the round trips)
+    int (*displayPrepareRead)(void*);
+    int (*displayReadEvents)(void*);
+    void (*displayCancelRead)(void*);
+    int (*displayDispatchPending)(void*);
+    int (*displayFlush)(void*);
+    int (*displayGetFd)(void*);
     void* (*proxyMarshalConstructor)(void*, uint32_t, const WlInterface*, ...);
     void* (*proxyMarshalConstructorVersioned)(void*, uint32_t, const WlInterface*, uint32_t, ...);
     void (*proxyMarshal)(void*, uint32_t, ...);
@@ -112,6 +121,16 @@ const WlApi* LoadApi() {
     api.displayConnect = (void* (*)(const char*))dlsym(lib, "wl_display_connect");
     api.displayDisconnect = (void (*)(void*))dlsym(lib, "wl_display_disconnect");
     api.displayRoundtrip = (int (*)(void*))dlsym(lib, "wl_display_roundtrip");
+    api.displayPrepareRead = (int (*)(void*))dlsym(lib, "wl_display_prepare_read");
+    api.displayReadEvents = (int (*)(void*))dlsym(lib, "wl_display_read_events");
+    api.displayCancelRead = (void (*)(void*))dlsym(lib, "wl_display_cancel_read");
+    api.displayDispatchPending = (int (*)(void*))dlsym(lib, "wl_display_dispatch_pending");
+    api.displayFlush = (int (*)(void*))dlsym(lib, "wl_display_flush");
+    api.displayGetFd = (int (*)(void*))dlsym(lib, "wl_display_get_fd");
+    if (!api.displayPrepareRead || !api.displayReadEvents || !api.displayCancelRead ||
+        !api.displayDispatchPending || !api.displayFlush || !api.displayGetFd) {
+        api.displayPrepareRead = nullptr;
+    }
     api.proxyMarshalConstructor = (void* (*)(void*, uint32_t, const WlInterface*, ...))dlsym(lib, "wl_proxy_marshal_constructor");
     api.proxyMarshalConstructorVersioned = (void* (*)(void*, uint32_t, const WlInterface*, uint32_t, ...))dlsym(lib, "wl_proxy_marshal_constructor_versioned");
     api.proxyMarshal = (void (*)(void*, uint32_t, ...))dlsym(lib, "wl_proxy_marshal");
@@ -160,6 +179,9 @@ struct Connection {
     void* registry = nullptr;
     void* xdgOutputManager = nullptr;
     std::vector<Output*> outputs;
+    // false until round trips have brought every output's details: after
+    // connecting, and when an output was bound since
+    bool isSynced = false;
 };
 
 std::mutex connectionMutex;
@@ -275,6 +297,8 @@ void OnGlobal(void*, void* registry, uint32_t name, const char* interface, uint3
         api->proxyAddListener(output->wlOutput, outputListener, output);
         connection.outputs.push_back(output);
         WatchLogical(output);
+        // its details come only in answer to the bind
+        connection.isSynced = false;
     } else if (strcmp(interface, "zxdg_output_manager_v1") == 0 && connection.xdgOutputManager == nullptr) {
         const uint32_t bound = version < 3 ? version : 3;
         connection.xdgOutputManager = api->proxyMarshalConstructorVersioned(registry, REGISTRY_BIND,
@@ -282,6 +306,7 @@ void OnGlobal(void*, void* registry, uint32_t name, const char* interface, uint3
         for (Output* output : connection.outputs) {
             WatchLogical(output);
         }
+        connection.isSynced = false;
     }
 }
 void OnGlobalRemove(void*, void*, uint32_t name) {
@@ -311,6 +336,30 @@ void Disconnect() {
     connection.display = nullptr;
     connection.registry = nullptr;
     connection.xdgOutputManager = nullptr;
+    connection.isSynced = false;
+}
+
+// Handles what the compositor has sent since the last call (outputs added,
+// removed or changed), without waiting for anything; false when the
+// connection broke.
+bool CatchUp() {
+    const WlApi* api = connection.api;
+    void* display = connection.display;
+    while (api->displayPrepareRead(display) != 0) {
+        if (api->displayDispatchPending(display) < 0) {
+            return false;
+        }
+    }
+    api->displayFlush(display);
+    struct pollfd pfd = {api->displayGetFd(display), POLLIN, 0};
+    if (poll(&pfd, 1, 0) > 0) {
+        if (api->displayReadEvents(display) < 0) {
+            return false;
+        }
+    } else {
+        api->displayCancelRead(display);
+    }
+    return api->displayDispatchPending(display) >= 0;
 }
 
 bool Connect() {
@@ -345,14 +394,23 @@ bool ListWaylandOutputs(std::vector<WaylandOutput>& outputs) {
         return false;
     }
 
-    // the first round trip brings the globals (and binds them), the second
-    // what the newly bound outputs have to say
-    for (int i = 0; i < 2; i++) {
-        if (connection.api->displayRoundtrip(connection.display) < 0) {
-            // the compositor went away; connect again on the next call
-            Disconnect();
-            return false;
+    // Once in sync, what changed has come as events, read without waiting:
+    // a call (every Mouse.setPosition on Wayland makes one) costs no round
+    // trip. Otherwise the first round trip brings the globals (and binds
+    // them), the second what the newly bound outputs have to say.
+    if (connection.isSynced && connection.api->displayPrepareRead != nullptr && !CatchUp()) {
+        // the compositor went away; connect again on the next call
+        Disconnect();
+        return false;
+    }
+    if (!connection.isSynced || connection.api->displayPrepareRead == nullptr) {
+        for (int i = 0; i < 2; i++) {
+            if (connection.api->displayRoundtrip(connection.display) < 0) {
+                Disconnect();
+                return false;
+            }
         }
+        connection.isSynced = true;
     }
 
     for (const Output* output : connection.outputs) {

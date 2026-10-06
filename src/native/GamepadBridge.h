@@ -9,6 +9,8 @@
 + (BOOL)buttonDown:(int)gamepadId button:(int)buttonId;
 + (BOOL)buttonUp:(int)gamepadId button:(int)buttonId;
 + (BOOL)setAxis:(int)gamepadId axis:(int)axisId value:(int)value;
++ (BOOL)beginUpdate:(int)gamepadId;
++ (BOOL)endUpdate:(int)gamepadId;
 @end
 
 #endif

@@ -114,8 +114,8 @@ const assertNear = function(actual, expected, tolerance, message) {
 let win = null;
 let regions = null;     // screen rectangles of the page's regions
 
-const call = function(code) {
-    return win.webContents.executeJavaScript(code);
+const call = function(code, isUserGesture = false) {
+    return win.webContents.executeJavaScript(code, isUserGesture);
 };
 
 // a page region in the same coordinates as Mouse.setPosition
@@ -274,6 +274,74 @@ test("moving with a button held drags", async function() {
     assertNear(up["screenY"], to.y, 1.5, "mouseup screenY");
 });
 
+test("two quick clicks make a double click, two slow ones do not", async function() {
+    const point = centre(regions.pad);
+    Mouse.setPosition(point.x, point.y);
+    await sleep(600);
+    let mark = events.length;
+    await click(point);
+    await click(point);
+    await waitFor(mark, "dblclick", function(e) {
+        return e["type"] === "dblclick";
+    });
+    const downs = events.slice(mark).filter(function(e) {
+        return e["type"] === "mousedown";
+    });
+    assert(downs.length === 2 && downs[1]["detail"] === 2, "the second mousedown's detail is " + (downs[1] && downs[1]["detail"]) + ", not 2");
+
+    await sleep(900);
+    mark = events.length;
+    await click(point);
+    await sleep(900);
+    await click(point);
+    await sleep(200);
+    assert(!events.slice(mark).some(function(e) {
+        return e["type"] === "dblclick";
+    }), "two clicks 0.9 s apart made a double click");
+});
+
+test("moveBy reaches a pointer-locked page as movement", async function() {
+    const point = centre(regions.pad);
+    Mouse.setPosition(point.x, point.y);
+    await sleep(50);
+    let mark = events.length;
+    const locked = await call("lockPointer()", true);
+    assert(locked === true, "requestPointerLock failed: " + locked);
+    await waitFor(mark, "pointer lock", function(e) {
+        return e["type"] === "pointerlockchange" && e["isLocked"];
+    });
+    try {
+        // movement while locked, summed: the pointer speed may scale it
+        const move = async function(dx, dy) {
+            const mark = events.length;
+            Mouse.moveBy(dx, dy);
+            await waitFor(mark, "locked mousemove", function(e) {
+                return e["type"] === "mousemove" && e["isLocked"];
+            });
+            await sleep(100);
+            let x = 0;
+            let y = 0;
+            for (const e of events.slice(mark)) {
+                if (e["type"] === "mousemove" && e["isLocked"]) {
+                    x += e["movementX"];
+                    y += e["movementY"];
+                }
+            }
+            return { "x": x, "y": y };
+        };
+        const right = await move(40, 0);
+        assert(right.x > 0, "moveBy(40, 0): movementX " + right.x + " should be positive");
+        const up = await move(0, -40);
+        assert(up.y < 0, "moveBy(0, -40): movementY " + up.y + " should be negative");
+    } finally {
+        mark = events.length;
+        await call("unlockPointer()");
+        await waitFor(mark, "pointer unlock", function(e) {
+            return e["type"] === "pointerlockchange" && !e["isLocked"];
+        }).catch(function() {});
+    }
+});
+
 test("setX and setY move the pointer along one axis", async function() {
     const pad = regions.pad;
     const start = { "x": Math.round(pad.x + pad.width * 0.3), "y": Math.round(pad.y + pad.height * 0.3) };
@@ -333,6 +401,46 @@ test("scrolling sends wheel events in the right direction", async function() {
 
     const three = await scroll(Mouse.scrollDown, 3, false);
     assert(three.deltaY > down.deltaY, "3 notches (" + three.deltaY + ") should scroll further than 1 (" + down.deltaY + ")");
+});
+
+test("scroll takes fractions of a notch, which add up", async function() {
+    const point = centre(regions.pad);
+    Mouse.setPosition(point.x, point.y);
+    await sleep(50);
+
+    // the wheel deltas of calls made one after another, summed
+    const sum = async function(calls) {
+        const mark = events.length;
+        for (const [x, y] of calls) {
+            Mouse.scroll(x, y);
+            await sleep(30);
+        }
+        await waitFor(mark, "wheel event", function(e) {
+            return e["type"] === "wheel";
+        });
+        await sleep(150);
+        let deltaX = 0;
+        let deltaY = 0;
+        for (const e of events.slice(mark)) {
+            if (e["type"] === "wheel") {
+                deltaX += e["deltaX"];
+                deltaY += e["deltaY"];
+            }
+        }
+        return { "deltaX": deltaX, "deltaY": deltaY };
+    };
+
+    const notch = await sum([[0, 1]]);
+    assert(notch.deltaY > 0, "scroll(0, 1): deltaY " + notch.deltaY + " should be positive (down)");
+    const halves = await sum([[0, 0.5], [0, 0.5]]);
+    assert(halves.deltaY > notch.deltaY * 0.5 && halves.deltaY < notch.deltaY * 2,
+        "two half notches (" + halves.deltaY + ") should scroll about as far as one (" + notch.deltaY + ")");
+    const up = await sum([[0, -0.5], [0, -0.5]]);
+    assert(up.deltaY < 0, "negative y: deltaY " + up.deltaY + " should be negative (up)");
+    const right = await sum([[0.5, 0], [0.5, 0]]);
+    assert(right.deltaX > 0, "positive x: deltaX " + right.deltaX + " should be positive (right)");
+    const left = await sum([[-1, 0]]);
+    assert(left.deltaX < 0, "negative x: deltaX " + left.deltaX + " should be negative (left)");
 });
 
 test("getIcon and getIconId follow the pointer shape", { "skip": isWayland && "Wayland shows only XWayland pointer shapes" }, async function() {
@@ -503,6 +611,54 @@ test("type enters text regardless of the keyboard layout", async function() {
     assert(value === sample, "typed " + JSON.stringify(sample) + ", the text box has " + JSON.stringify(value));
 });
 
+test("type presses Enter, Tab and Backspace for their characters", async function() {
+    assert(await call("focusText()"), "the text box did not take the focus");
+    await requireFocus();
+    let mark = events.length;
+    Keyboard.type("ab\bc\r\nd");
+    const enter = await waitFor(mark, "Enter keydown", function(e) {
+        return e["type"] === "keydown" && e["code"] === "Enter";
+    });
+    await waitFor(mark, "Backspace keydown", function(e) {
+        return e["type"] === "keydown" && e["code"] === "Backspace";
+    });
+    const end = Date.now() + 3000;
+    let value = "";
+    while (Date.now() < end && value !== "ac\nd") {
+        value = await call("readText()");
+        await sleep(25);
+    }
+    assert(value === "ac\nd", "the text box has " + JSON.stringify(value) + ", not \"ac\\nd\" (one Enter for \\r\\n)");
+    assert(events.slice(mark).filter(function(e) {
+        return e["type"] === "keydown" && e["code"] === "Enter";
+    }).length === 1, "\\r\\n pressed Enter more than once");
+
+    // outside the text box, so the Tab moves no focus
+    await call("blurText()");
+    mark = events.length;
+    Keyboard.type("\t");
+    await waitFor(mark, "Tab keydown", function(e) {
+        return e["type"] === "keydown" && e["code"] === "Tab";
+    });
+});
+
+test("getLockState follows Caps Lock", { "skip": isWayland && "the lock state comes from XWayland" }, async function() {
+    await requireFocus();
+    const before = Keyboard.getLockState()["capsLock"];
+    const toggle = async function() {
+        keyDown("CapsLock");
+        keyUp("CapsLock");
+        await sleep(150);
+    };
+    await toggle();
+    try {
+        assert(Keyboard.getLockState()["capsLock"] === !before, "Caps Lock was " + before + " and is still " + Keyboard.getLockState()["capsLock"]);
+    } finally {
+        await toggle();
+    }
+    assert(Keyboard.getLockState()["capsLock"] === before, "Caps Lock is not back to " + before);
+});
+
 
 //
 // Gamepad
@@ -601,6 +757,41 @@ test("a virtual gamepad shows up in navigator.getGamepads with every button and 
                     return Math.abs(p.buttons[btn].value - expected) <= 0.1;
                 });
             }
+        }
+
+        // setState: buttons, an analog trigger and axes in one call
+        gamepad.setState({ "buttons": [true, false, true, false, false, false, { "pressed": true, "value": 0.5 }], "axes": [0.5, -0.5] });
+        await waitForPad(index, "setState's buttons, trigger and axes", function(p) {
+            return p.buttons[0].pressed && !p.buttons[1].pressed && p.buttons[2].pressed &&
+                Math.abs(p.buttons[6].value - 0.5) <= 0.1 && Math.abs(p.axes[0] - 0.5) <= 0.1 && Math.abs(p.axes[1] + 0.5) <= 0.1;
+        });
+        gamepad.setState({ "buttons": [false, false, false, false, false, false, 0], "axes": [0, 0] });
+        await waitForPad(index, "setState's release", function(p) {
+            return !p.buttons[0].pressed && !p.buttons[2].pressed && p.buttons[6].value <= 0.1 && Math.abs(p.axes[0]) <= 0.1;
+        });
+
+        // rumble: Chromium plays it on the pad as a game would
+        if (os.platform() !== "darwin") {
+            const rumbles = [];
+            gamepad.onRumble = function(rumble) {
+                rumbles.push(rumble);
+            };
+            const played = call("playRumble(" + index + ", 1, 0.5, 300)", true);
+            const end = Date.now() + 3000;
+            while (Date.now() < end && !rumbles.some(function(r) { return r.strong > 0.5; })) {
+                await sleep(20);
+            }
+            assert(rumbles.some(function(r) {
+                return r.strong > 0.5 && r.weak > 0.2;
+            }), "onRumble never got the rumble Chromium played (" + await played + "): " + JSON.stringify(rumbles));
+            await played;
+            const stopEnd = Date.now() + 3000;
+            while (Date.now() < stopEnd && !(rumbles.length > 0 && rumbles[rumbles.length - 1].strong === 0)) {
+                await sleep(20);
+            }
+            assert(rumbles[rumbles.length - 1].strong === 0 && rumbles[rumbles.length - 1].weak === 0,
+                "the rumble never stopped: " + JSON.stringify(rumbles));
+            gamepad.onRumble = null;
         }
 
         gamepad.destroy();

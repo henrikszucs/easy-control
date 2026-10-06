@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <mutex>
 #include <set>
@@ -70,6 +71,15 @@ static Napi::Object CursorToObject(Napi::Env env, CursorPicture picture) {
 }
 
 #if defined(IS_MACOS)
+// The last press, for the click count of the next (see SendButton): its
+// button, when and where; the count of the press and of the moves and release
+// that belong to it.
+static const double CLICK_DISTANCE = 4;
+static int clickButton = -1;
+static CFAbsoluteTime clickTime = 0;
+static CGPoint clickPoint = {0, 0};
+static int64_t clickCount = 1;
+
 // FNV-1a, to fingerprint a cursor picture where the platform has no cheaper id
 static uint32_t HashBytes(const uint8_t* bytes, size_t length, uint32_t hash = 2166136261u) {
     for (size_t i = 0; i < length; i++) {
@@ -103,6 +113,10 @@ static bool ParseButton(const Napi::CallbackInfo& info, std::string& button) {
     return true;
 }
 
+// More notches than any wheel sends in one event; also keeps the X11 loop of
+// button presses short and amount * WHEEL_DELTA in range on Windows.
+static const double MAX_SCROLL_NOTCHES = 10000;
+
 // reads the scroll arguments, or throws and returns false
 static bool ParseScroll(const Napi::CallbackInfo& info, int& amount, bool& isHorizontal) {
     Napi::Env env = info.Env();
@@ -116,6 +130,10 @@ static bool ParseScroll(const Napi::CallbackInfo& info, int& amount, bool& isHor
     }
     if (!info[1].IsBoolean()) {
         Napi::TypeError::New(env, "Expected boolean 2nd argument").ThrowAsJavaScriptException();
+        return false;
+    }
+    if (std::fabs(info[0].As<Napi::Number>().DoubleValue()) > MAX_SCROLL_NOTCHES) {
+        Napi::RangeError::New(env, "Scroll amount out of range (-10000 to 10000)").ThrowAsJavaScriptException();
         return false;
     }
     amount = info[0].As<Napi::Number>().Int32Value();
@@ -199,44 +217,78 @@ static bool GetPosition(double& x, double& y) {
     #endif
 }
 
+#if defined(IS_MACOS)
+// Posts a move to a point - posted as an event, not only warped, so
+// applications see the move (and a drag while a button is held) - with the
+// movement in its delta fields: applications that have detached the pointer
+// from the mouse (pointer lock, games) read those, not the position.
+static bool PostMove(CGPoint target, int64_t dx, int64_t dy) {
+    CGEventType eventType = kCGEventMouseMoved;
+    CGMouseButton mouseButton = kCGMouseButtonLeft;
+    const uint32_t pressed = PressedButtons();
+    if (pressed & (1u << kCGMouseButtonLeft)) {
+        eventType = kCGEventLeftMouseDragged;
+    } else if (pressed & (1u << kCGMouseButtonRight)) {
+        eventType = kCGEventRightMouseDragged;
+        mouseButton = kCGMouseButtonRight;
+    } else if (pressed != 0) {
+        eventType = kCGEventOtherMouseDragged;
+        for (uint32_t b = 2; b < 32; b++) {
+            if (pressed & (1u << b)) {
+                mouseButton = (CGMouseButton)b;
+                break;
+            }
+        }
+    }
+    CGEventRef moveEvent = CGEventCreateMouseEvent(EventSource(), eventType, target, mouseButton);
+    if (moveEvent == NULL) {
+        return false;
+    }
+    CGEventSetIntegerValueField(moveEvent, kCGMouseEventDeltaX, dx);
+    CGEventSetIntegerValueField(moveEvent, kCGMouseEventDeltaY, dy);
+    if (pressed != 0) {
+        // a drag belongs to the press that started it
+        CGEventSetIntegerValueField(moveEvent, kCGMouseEventClickState, clickCount);
+    }
+    CGEventSetFlags(moveEvent, ModifierFlags());
+    CGEventPost(kCGHIDEventTap, moveEvent);
+    CFRelease(moveEvent);
+    // the posted event moves the pointer a moment later; warping it there
+    // as well makes getX/getY right after read the new position
+    CGWarpMouseCursorPosition(target);
+    return true;
+}
+
+// the bounding box of all displays, in points
+static CGRect DisplaysBounds() {
+    CGDirectDisplayID displays[32];
+    uint32_t count = 0;
+    CGRect bounds = CGRectNull;
+    if (CGGetActiveDisplayList(32, displays, &count) == kCGErrorSuccess) {
+        for (uint32_t i = 0; i < count; i++) {
+            bounds = CGRectUnion(bounds, CGDisplayBounds(displays[i]));
+        }
+    }
+    return bounds;
+}
+#endif
+
 // moves the pointer to logical coordinates (see Screen.list)
 static void MoveTo(Napi::Env env, double x, double y) {
     #if defined(IS_WINDOWS)
         DpiScope dpiScope;
         POINT point = LogicalToPhysical(x, y);
-        SetCursorPos(point.x, point.y);
+        if (!SetCursorPos(point.x, point.y)) {
+            ThrowInputBlocked(env, "SetCursorPos failed");
+        }
 
     #elif defined(IS_MACOS)
-        // posted as an event, not warped, so applications see the move (and a
-        // drag while a button is held)
-        CGEventType eventType = kCGEventMouseMoved;
-        CGMouseButton mouseButton = kCGMouseButtonLeft;
-        const uint32_t pressed = PressedButtons();
-        if (pressed & (1u << kCGMouseButtonLeft)) {
-            eventType = kCGEventLeftMouseDragged;
-        } else if (pressed & (1u << kCGMouseButtonRight)) {
-            eventType = kCGEventRightMouseDragged;
-            mouseButton = kCGMouseButtonRight;
-        } else if (pressed != 0) {
-            eventType = kCGEventOtherMouseDragged;
-            for (uint32_t b = 2; b < 32; b++) {
-                if (pressed & (1u << b)) {
-                    mouseButton = (CGMouseButton)b;
-                    break;
-                }
-            }
-        }
-        CGEventRef moveEvent = CGEventCreateMouseEvent(EventSource(), eventType, CGPointMake(x, y), mouseButton);
-        if (moveEvent == NULL) {
+        double currentX = x;
+        double currentY = y;
+        GetPosition(currentX, currentY);
+        if (!PostMove(CGPointMake(x, y), std::lround(x - currentX), std::lround(y - currentY))) {
             Napi::Error::New(env, "Failed to create mouse event").ThrowAsJavaScriptException();
-            return;
         }
-        CGEventSetFlags(moveEvent, ModifierFlags());
-        CGEventPost(kCGHIDEventTap, moveEvent);
-        CFRelease(moveEvent);
-        // the posted event moves the pointer a moment later; warping it there
-        // as well makes getX/getY right after read the new position
-        CGWarpMouseCursorPosition(CGPointMake(x, y));
 
     #elif defined(IS_LINUX)
         if (IsWaylandSession()) {
@@ -283,19 +335,40 @@ static void MoveTo(Napi::Env env, double x, double y) {
 }
 
 
-Napi::Number Mouse::getX(const Napi::CallbackInfo& info) {
+// the pointer position, or false after throwing why it cannot be read
+static bool RequirePosition(Napi::Env env, double& x, double& y) {
+    if (GetPosition(x, y)) {
+        return true;
+    }
+    #if defined(IS_WINDOWS)
+        ThrowInputBlocked(env, "GetCursorPos failed");
+    #elif defined(IS_LINUX)
+        Napi::Error::New(env, IsWaylandSession()
+            ? "The pointer position is not known before it is set through easy-control (no XWayland to ask)"
+            : "Failed to open X display").ThrowAsJavaScriptException();
+    #else
+        Napi::Error::New(env, "Failed to read the pointer position").ThrowAsJavaScriptException();
+    #endif
+    return false;
+}
+
+Napi::Value Mouse::getX(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
     double x = 0;
     double y = 0;
-    GetPosition(x, y);
+    if (!RequirePosition(env, x, y)) {
+        return env.Undefined();
+    }
     return Napi::Number::New(env, x);
 }
 
-Napi::Number Mouse::getY(const Napi::CallbackInfo& info) {
+Napi::Value Mouse::getY(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
     double x = 0;
     double y = 0;
-    GetPosition(x, y);
+    if (!RequirePosition(env, x, y)) {
+        return env.Undefined();
+    }
     return Napi::Number::New(env, y);
 }
 
@@ -630,7 +703,9 @@ void Mouse::setX(const Napi::CallbackInfo& info) {
     }
     double currentX = 0;
     double currentY = 0;
-    GetPosition(currentX, currentY);
+    if (!RequirePosition(info.Env(), currentX, currentY)) {
+        return;
+    }
     MoveTo(info.Env(), x, currentY);
 }
 
@@ -641,7 +716,9 @@ void Mouse::setY(const Napi::CallbackInfo& info) {
     }
     double currentX = 0;
     double currentY = 0;
-    GetPosition(currentX, currentY);
+    if (!RequirePosition(info.Env(), currentX, currentY)) {
+        return;
+    }
     MoveTo(info.Env(), currentX, y);
 }
 
@@ -652,6 +729,115 @@ void Mouse::setPosition(const Napi::CallbackInfo& info) {
         return;
     }
     MoveTo(info.Env(), x, y);
+}
+
+
+// moveBy's limit, in mouse counts either way: far more than one event of a
+// real mouse carries
+static const double MAX_MOVE_COUNTS = 100000;
+
+// reads two finite numbers of at most `limit` either way, or throws and
+// returns false
+static bool ParsePair(const Napi::CallbackInfo& info, double limit, const char* rangeMessage, double& a, double& b) {
+    if (!ParseCoordinate(info, 0, a) || !ParseCoordinate(info, 1, b)) {
+        return false;
+    }
+    if (std::fabs(a) > limit || std::fabs(b) > limit) {
+        Napi::RangeError::New(info.Env(), rangeMessage).ThrowAsJavaScriptException();
+        return false;
+    }
+    return true;
+}
+
+// What moveBy and scroll leave over: the fractions of the units the platform
+// takes, added to the next call, so many small steps add up to the right
+// distance. Each call adds to it and takes out the whole units.
+struct Remainder {
+    double x = 0;
+    double y = 0;
+};
+static std::mutex remainderMutex;
+static Remainder moveRemainder;
+static Remainder scrollRemainder;
+
+static void TakeWhole(Remainder& remainder, double x, double y, long& wholeX, long& wholeY) {
+    std::lock_guard<std::mutex> lock(remainderMutex);
+    remainder.x += x;
+    remainder.y += y;
+    wholeX = (long)std::trunc(remainder.x);
+    wholeY = (long)std::trunc(remainder.y);
+    remainder.x -= wholeX;
+    remainder.y -= wholeY;
+}
+
+// Mouse.moveBy(dx, dy): moves by a distance in mouse counts, as a mouse does;
+// what pointer-locked pages and games read (movementX/Y), which moving to a
+// position never makes. Fractions are added to the next call.
+void Mouse::moveBy(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    double dx = 0;
+    double dy = 0;
+    if (!ParsePair(info, MAX_MOVE_COUNTS, "Distance out of range (-100000 to 100000)", dx, dy)) {
+        return;
+    }
+    long x = 0;
+    long y = 0;
+    TakeWhole(moveRemainder, dx, dy, x, y);
+    if (x == 0 && y == 0) {
+        return;
+    }
+
+    #if defined(IS_WINDOWS)
+        // Raw Input readers get the counts as they are; the visible pointer
+        // moves by them after the pointer speed and acceleration settings
+        INPUT input = {0};
+        input.type = INPUT_MOUSE;
+        input.mi.dx = x;
+        input.mi.dy = y;
+        input.mi.dwFlags = MOUSEEVENTF_MOVE;
+        if (SendInput(1, &input, sizeof(INPUT)) != 1) {
+            ThrowInputBlocked(env, "SendInput sent nothing");
+        }
+
+    #elif defined(IS_MACOS)
+        // the pointer goes by the distance (kept on the displays); the delta
+        // fields carry it whole, for applications that detached the pointer
+        double currentX = 0;
+        double currentY = 0;
+        if (!RequirePosition(env, currentX, currentY)) {
+            return;
+        }
+        double targetX = currentX + x;
+        double targetY = currentY + y;
+        const CGRect bounds = DisplaysBounds();
+        if (!CGRectIsNull(bounds)) {
+            targetX = std::min(std::max(targetX, (double)CGRectGetMinX(bounds)), (double)CGRectGetMaxX(bounds) - 1);
+            targetY = std::min(std::max(targetY, (double)CGRectGetMinY(bounds)), (double)CGRectGetMaxY(bounds) - 1);
+        }
+        if (!PostMove(CGPointMake(targetX, targetY), x, y)) {
+            Napi::Error::New(env, "Failed to create mouse event").ThrowAsJavaScriptException();
+        }
+
+    #elif defined(IS_LINUX)
+        if (IsWaylandSession()) {
+            std::string error;
+            const bool isDone = VirtualInput::PointerMoveBy((int)x, (int)y, error);
+            if (isDone) {
+                // the compositor applies acceleration: where the pointer is
+                // now is not known
+                std::lock_guard<std::mutex> lock(pointerMutex);
+                isPointerSet = false;
+            }
+            ThrowIfFailed(env, isDone, error);
+            return;
+        }
+        Display *display = RequireDisplay(env);
+        if (display == NULL) {
+            return;
+        }
+        XTestFakeRelativeMotionEvent(display, (int)x, (int)y, CurrentTime);
+        XFlush(display);
+    #endif
 }
 
 
@@ -680,12 +866,18 @@ static bool SendButton(Napi::Env env, const std::string& button, bool isDown) {
             input.mi.mouseData = XBUTTON2;
         }
 
-        SendInput(1, &input, sizeof(INPUT));
+        if (SendInput(1, &input, sizeof(INPUT)) != 1) {
+            ThrowInputBlocked(env, "SendInput sent nothing");
+            return false;
+        }
 
     #elif defined(IS_MACOS)
+        CGPoint cursor = CGPointZero;
         CGEventRef event = CGEventCreate(NULL);
-        CGPoint cursor = CGEventGetLocation(event);
-        CFRelease(event);
+        if (event != NULL) {
+            cursor = CGEventGetLocation(event);
+            CFRelease(event);
+        }
 
         CGEventType eventType = isDown ? kCGEventLeftMouseDown : kCGEventLeftMouseUp;
         CGMouseButton mouseButton = kCGMouseButtonLeft;
@@ -704,11 +896,27 @@ static bool SendButton(Napi::Env env, const std::string& button, bool isDown) {
             mouseButton = (CGMouseButton)4; // Forward button
         }
 
+        // macOS tells a double click from two clicks by the click count the
+        // events carry, not by their timing: a press of the same button within
+        // the double-click interval and a few points of the last one counts up
+        if (isDown) {
+            const CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
+            const bool isRepeat = clickButton == (int)mouseButton &&
+                now - clickTime <= [NSEvent doubleClickInterval] &&
+                std::fabs(cursor.x - clickPoint.x) <= CLICK_DISTANCE &&
+                std::fabs(cursor.y - clickPoint.y) <= CLICK_DISTANCE;
+            clickCount = isRepeat ? clickCount + 1 : 1;
+            clickButton = (int)mouseButton;
+            clickTime = now;
+            clickPoint = cursor;
+        }
+
         CGEventRef mouseEvent = CGEventCreateMouseEvent(EventSource(), eventType, cursor, mouseButton);
         if (mouseEvent == NULL) {
             Napi::Error::New(env, "Failed to create mouse event").ThrowAsJavaScriptException();
             return false;
         }
+        CGEventSetIntegerValueField(mouseEvent, kCGMouseEventClickState, clickButton == (int)mouseButton ? clickCount : 1);
         CGEventSetFlags(mouseEvent, ModifierFlags());
         CGEventPost(kCGHIDEventTap, mouseEvent);
         CFRelease(mouseEvent);
@@ -818,7 +1026,9 @@ static void Scroll(const Napi::CallbackInfo& info, bool isForward) {
             input.mi.mouseData = (isForward ? -amount : amount) * WHEEL_DELTA;
         }
 
-        SendInput(1, &input, sizeof(INPUT));
+        if (SendInput(1, &input, sizeof(INPUT)) != 1) {
+            ThrowInputBlocked(env, "SendInput sent nothing");
+        }
 
     #elif defined(IS_MACOS)
         // wheel 1 is vertical (positive up), wheel 2 horizontal (positive left)
@@ -879,6 +1089,128 @@ void Mouse::scrollUp(const Napi::CallbackInfo& info) {
     Scroll(info, false);
 }
 
+#if defined(IS_MACOS)
+// Mouse.scroll's points per notch on macOS, which scrolls continuous (pixel)
+// events by points: what Chromium scrolls for a notch of a wheel (40 px), so a
+// page scrolls as far as with scrollDown(1, false)
+static const double MACOS_POINTS_PER_NOTCH = 40;
+#elif defined(IS_LINUX)
+// the high-resolution wheel totals (120ths of a notch) Wayland's scroll has
+// sent, positive down and right, to tell when they complete a notch
+static long wheelTotalX = 0;
+static long wheelTotalY = 0;
+#endif
+
+// Mouse.scroll(x, y): scrolls by wheel notches, fractions included - what
+// touchpads and a browser's pixel wheel events need. Positive x scrolls right,
+// positive y down (WheelEvent's signs). What the platform cannot send yet is
+// added to the next call.
+void Mouse::scroll(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    double x = 0;
+    double y = 0;
+    if (!ParsePair(info, MAX_SCROLL_NOTCHES, "Scroll amount out of range (-10000 to 10000)", x, y)) {
+        return;
+    }
+
+    #if defined(IS_WINDOWS)
+        // in 120ths of a notch (WHEEL_DELTA), which Windows takes as they are
+        // (precise touchpads send such); the wheel counts up as positive
+        long wheelX = 0;
+        long wheelY = 0;
+        TakeWhole(scrollRemainder, x * WHEEL_DELTA, y * WHEEL_DELTA, wheelX, wheelY);
+        INPUT inputs[2] = {};
+        UINT count = 0;
+        if (wheelY != 0) {
+            inputs[count].type = INPUT_MOUSE;
+            inputs[count].mi.dwFlags = MOUSEEVENTF_WHEEL;
+            inputs[count].mi.mouseData = (DWORD)(-wheelY);
+            count++;
+        }
+        if (wheelX != 0) {
+            inputs[count].type = INPUT_MOUSE;
+            inputs[count].mi.dwFlags = MOUSEEVENTF_HWHEEL;
+            inputs[count].mi.mouseData = (DWORD)wheelX;
+            count++;
+        }
+        if (count > 0 && SendInput(count, inputs, sizeof(INPUT)) != count) {
+            ThrowInputBlocked(env, "SendInput sent nothing");
+        }
+
+    #elif defined(IS_MACOS)
+        // a continuous (touchpad-like) event in points; wheel 1 is vertical
+        // (positive up), wheel 2 horizontal (positive left)
+        long pointsX = 0;
+        long pointsY = 0;
+        TakeWhole(scrollRemainder, x * MACOS_POINTS_PER_NOTCH, y * MACOS_POINTS_PER_NOTCH, pointsX, pointsY);
+        if (pointsX == 0 && pointsY == 0) {
+            return;
+        }
+        CGEventRef scrollEvent = CGEventCreateScrollWheelEvent(EventSource(), kCGScrollEventUnitPixel, 2,
+            (int32_t)-pointsY, (int32_t)-pointsX);
+        if (scrollEvent == NULL) {
+            Napi::Error::New(env, "Failed to create scroll event").ThrowAsJavaScriptException();
+            return;
+        }
+        CGEventSetIntegerValueField(scrollEvent, kCGScrollWheelEventIsContinuous, 1);
+        CGEventSetFlags(scrollEvent, ModifierFlags());
+        CGEventPost(kCGHIDEventTap, scrollEvent);
+        CFRelease(scrollEvent);
+
+    #elif defined(IS_LINUX)
+        if (IsWaylandSession()) {
+            // the high-resolution wheel (120ths of a notch), with the whole
+            // notches it completes for readers of the plain one
+            long wheelX = 0;
+            long wheelY = 0;
+            TakeWhole(scrollRemainder, x * 120, y * 120, wheelX, wheelY);
+            long notchesX = 0;
+            long notchesY = 0;
+            {
+                std::lock_guard<std::mutex> lock(remainderMutex);
+                notchesX = (wheelTotalX + wheelX) / 120 - wheelTotalX / 120;
+                notchesY = (wheelTotalY + wheelY) / 120 - wheelTotalY / 120;
+                wheelTotalX = (wheelTotalX + wheelX) % (120 * 1000);
+                wheelTotalY = (wheelTotalY + wheelY) % (120 * 1000);
+            }
+            std::string error;
+            bool isDone = true;
+            // REL_WHEEL counts up as positive, REL_HWHEEL right
+            if (wheelY != 0) {
+                isDone = VirtualInput::PointerScrollHiRes(REL_WHEEL, (int)-wheelY, (int)-notchesY, error);
+            }
+            if (isDone && wheelX != 0) {
+                isDone = VirtualInput::PointerScrollHiRes(REL_HWHEEL, (int)wheelX, (int)notchesX, error);
+            }
+            ThrowIfFailed(env, isDone, error);
+            return;
+        }
+        // XTest has only the wheel's buttons, 4/5 up/down and 6/7 left/right:
+        // the fractions add up to whole notches
+        long notchesX = 0;
+        long notchesY = 0;
+        TakeWhole(scrollRemainder, x, y, notchesX, notchesY);
+        if (notchesX == 0 && notchesY == 0) {
+            return;
+        }
+        Display *display = RequireDisplay(env);
+        if (display == NULL) {
+            return;
+        }
+        const unsigned int buttonY = notchesY > 0 ? 5 : 4;
+        const unsigned int buttonX = notchesX > 0 ? 7 : 6;
+        for (long i = 0; i < std::labs(notchesY); i++) {
+            XTestFakeButtonEvent(display, buttonY, True, CurrentTime);
+            XTestFakeButtonEvent(display, buttonY, False, CurrentTime);
+        }
+        for (long i = 0; i < std::labs(notchesX); i++) {
+            XTestFakeButtonEvent(display, buttonX, True, CurrentTime);
+            XTestFakeButtonEvent(display, buttonX, False, CurrentTime);
+        }
+        XFlush(display);
+    #endif
+}
+
 
 Napi::Object Mouse::Init(Napi::Env env, Napi::Object exports) {
     Napi::Object obj = Napi::Object::New(env);
@@ -891,6 +1223,7 @@ Napi::Object Mouse::Init(Napi::Env env, Napi::Object exports) {
     obj.Set(Napi::String::New(env, "setX"), Napi::Function::New(env, Mouse::setX));
     obj.Set(Napi::String::New(env, "setY"), Napi::Function::New(env, Mouse::setY));
     obj.Set(Napi::String::New(env, "setPosition"), Napi::Function::New(env, Mouse::setPosition));
+    obj.Set(Napi::String::New(env, "moveBy"), Napi::Function::New(env, Mouse::moveBy));
 
     obj.Set(Napi::String::New(env, "buttonDown"), Napi::Function::New(env, Mouse::buttonDown));
     obj.Set(Napi::String::New(env, "buttonUp"), Napi::Function::New(env, Mouse::buttonUp));
@@ -898,5 +1231,6 @@ Napi::Object Mouse::Init(Napi::Env env, Napi::Object exports) {
 
     obj.Set(Napi::String::New(env, "scrollDown"), Napi::Function::New(env, Mouse::scrollDown));
     obj.Set(Napi::String::New(env, "scrollUp"), Napi::Function::New(env, Mouse::scrollUp));
+    obj.Set(Napi::String::New(env, "scroll"), Napi::Function::New(env, Mouse::scroll));
     return obj;
 }

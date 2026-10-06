@@ -7,6 +7,8 @@
 
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
+#include <thread>
 #include <vector>
 
 #include "windows-gamepad/common/easycontrol_pad.h"
@@ -19,6 +21,8 @@
 // how long a new pad's devices may take to come up
 static const DWORD DEVICE_TIMEOUT_MS = 10000;
 static const DWORD SERVICE_TIMEOUT_MS = 10000;
+// how often a version 2 driver is asked for the rumble state
+static const DWORD OUTPUT_POLL_MS = 16;
 
 // {4D1E55B2-F16F-11CF-88CB-001111000030}
 static const GUID HidInterfaceGuid = { 0x4D1E55B2, 0xF16F, 0x11CF, { 0x88, 0xCB, 0x00, 0x11, 0x11, 0x00, 0x00, 0x30 } };
@@ -26,8 +30,16 @@ static const GUID HidInterfaceGuid = { 0x4D1E55B2, 0xF16F, 0x11CF, { 0x88, 0xCB,
 struct WinPad {
     HANDLE pipe = INVALID_HANDLE_VALUE;     // the pad lives while this is open
     HANDLE xusb = INVALID_HANDLE_VALUE;
+    std::wstring xusbPath;
     HANDLE hid = INVALID_HANDLE_VALUE;      // its vendor collection
     EASYCONTROL_PAD_STATE state = {};
+    int driverVersion = 0;                  // what the running driver says it is
+
+    // the rumble thread (WinPadStartOutput)
+    std::thread outputThread;
+    HANDLE stopEvent = NULL;
+    WinPadOutputCallback outputCallback = nullptr;
+    void* outputContext = nullptr;
 };
 
 static std::string WinErrorText(DWORD code) {
@@ -54,8 +66,35 @@ static void SetError(WinPadError& error, const char* code, const std::string& me
 // driver status and setup
 //
 
+static std::wstring ModuleFolder();
+
+// the version of the driver files beside the addon (gamepad/version.json,
+// {"version": N}); 0 when they are missing. Read once: they do not change
+// while the addon is loaded.
+static int BundledVersion() {
+    static int version = -1;
+    if (version >= 0) {
+        return version;
+    }
+    version = 0;
+    FILE* file = _wfopen((ModuleFolder() + L"\\gamepad\\version.json").c_str(), L"rb");
+    if (file == nullptr) {
+        return version;
+    }
+    char text[256] = {};
+    const size_t length = fread(text, 1, sizeof(text) - 1, file);
+    fclose(file);
+    text[length] = '\0';
+    const char* key = strstr(text, "\"version\"");
+    const char* colon = key != nullptr ? strchr(key, ':') : nullptr;
+    if (colon != nullptr) {
+        version = (int)strtol(colon + 1, nullptr, 10);
+    }
+    return version;
+}
+
 WinDriverStatus WinDriverGetStatus() {
-    WinDriverStatus status = { false, 0, EASYCONTROL_PAD_VERSION };
+    WinDriverStatus status = { false, 0, EASYCONTROL_PAD_MIN_VERSION, BundledVersion() };
     DWORD version = 0;
     DWORD size = sizeof(version);
     if (RegGetValueW(HKEY_LOCAL_MACHINE, EASYCONTROL_REGISTRY_KEY, L"Version", RRF_RT_REG_DWORD, nullptr, &version, &size) != ERROR_SUCCESS) {
@@ -96,7 +135,10 @@ static std::wstring ModuleFolder() {
     }
 }
 
-bool WinDriverRunSetup(const wchar_t* action, WinPadError& error) {
+// the setup's exit code when it did not install over a newer version
+static const DWORD SETUP_EXIT_NEWER_INSTALLED = 2;
+
+bool WinDriverRunSetup(const wchar_t* action, bool force, WinPadError& error) {
     const std::wstring script = ModuleFolder() + L"\\gamepad\\easy-control-gamepad-setup.ps1";
     if (GetFileAttributesW(script.c_str()) == INVALID_FILE_ATTRIBUTES) {
         SetError(error, "EASYCONTROL_SETUP_MISSING", "The gamepad driver files are missing beside the addon");
@@ -105,7 +147,8 @@ bool WinDriverRunSetup(const wchar_t* action, WinPadError& error) {
     wchar_t system[MAX_PATH];
     GetSystemDirectoryW(system, MAX_PATH);
     const std::wstring powershell = std::wstring(system) + L"\\WindowsPowerShell\\v1.0\\powershell.exe";
-    const std::wstring parameters = L"-NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"" + script + L"\" " + action;
+    const std::wstring parameters = L"-NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"" + script + L"\" " + action +
+        (force ? L" -Force" : L"");
 
     SHELLEXECUTEINFOW execute = {};
     execute.cbSize = sizeof(execute);
@@ -127,6 +170,11 @@ bool WinDriverRunSetup(const wchar_t* action, WinPadError& error) {
     DWORD exitCode = 1;
     GetExitCodeProcess(execute.hProcess, &exitCode);
     CloseHandle(execute.hProcess);
+    if (exitCode == SETUP_EXIT_NEWER_INSTALLED) {
+        SetError(error, "EASYCONTROL_SETUP_FAILED",
+            "A newer gamepad driver is installed, which serves this version too; installDriver({ force: true }) replaces it");
+        return false;
+    }
     if (exitCode != 0) {
         SetError(error, "EASYCONTROL_SETUP_FAILED",
             "The driver setup failed, its log is %ProgramData%\\easy-control\\gamepad-setup.log");
@@ -203,15 +251,30 @@ static std::vector<std::wstring> InterfacePaths(const GUID& guid, const wchar_t*
     return paths;
 }
 
-static HANDLE OpenXusb(const wchar_t* instanceId) {
+// the XUSB device, and the path it was opened by (the rumble thread opens it
+// again: a handle without FILE_FLAG_OVERLAPPED does one request at a time)
+static HANDLE OpenXusb(const wchar_t* instanceId, std::wstring& openedPath) {
     for (const std::wstring& path : InterfacePaths(EASYCONTROL_GUID_DEVINTERFACE_XUSB, instanceId)) {
         HANDLE handle = CreateFileW(path.c_str(), GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
             nullptr, OPEN_EXISTING, 0, nullptr);
         if (handle != INVALID_HANDLE_VALUE) {
+            openedPath = path;
             return handle;
         }
     }
     return INVALID_HANDLE_VALUE;
+}
+
+// the running driver's version: it answers EASYCONTROL_IOCTL_GET_VERSION from
+// version 3 on, and version 2 refuses it
+static int DriverVersion(HANDLE xusb) {
+    EASYCONTROL_PAD_VERSION_INFO info = {};
+    DWORD returned = 0;
+    if (DeviceIoControl(xusb, EASYCONTROL_IOCTL_GET_VERSION, nullptr, 0, &info, sizeof(info), &returned, nullptr) &&
+            returned == sizeof(info)) {
+        return (int)info.Version;
+    }
+    return 2;
 }
 
 // the HID device's vendor collection, one of the collections hidclass made
@@ -275,7 +338,7 @@ WinPad* WinPadCreate(WinPadError& error) {
             "The easy-control gamepad driver is not installed; Gamepad.installDriver() installs it");
         return nullptr;
     }
-    if (status.version < status.required) {
+    if (status.version < EASYCONTROL_PAD_MIN_VERSION) {
         SetError(error, "EASYCONTROL_DRIVER_OUTDATED",
             "The easy-control gamepad driver is outdated (" + std::to_string(status.version) + ", needs " +
             std::to_string(status.required) + "); Gamepad.installDriver() updates it");
@@ -313,7 +376,7 @@ WinPad* WinPadCreate(WinPadError& error) {
     const ULONGLONG end = GetTickCount64() + DEVICE_TIMEOUT_MS;
     while ((pad->xusb == INVALID_HANDLE_VALUE || pad->hid == INVALID_HANDLE_VALUE) && GetTickCount64() < end) {
         if (pad->xusb == INVALID_HANDLE_VALUE) {
-            pad->xusb = OpenXusb(response.XusbInstanceId);
+            pad->xusb = OpenXusb(response.XusbInstanceId, pad->xusbPath);
         }
         if (pad->hid == INVALID_HANDLE_VALUE) {
             pad->hid = OpenHidStateCollection(response.HidInstanceId);
@@ -325,6 +388,19 @@ WinPad* WinPadCreate(WinPadError& error) {
     if (pad->xusb == INVALID_HANDLE_VALUE || pad->hid == INVALID_HANDLE_VALUE) {
         SetError(error, "EASYCONTROL_CREATE_FAILED", std::string("The virtual gamepad's ") +
             (pad->xusb == INVALID_HANDLE_VALUE ? "XInput" : "HID") + " device did not start");
+        WinPadDestroy(pad);
+        return nullptr;
+    }
+
+    // The registry says what the setup installed, the service and the driver
+    // what runs: older ones are left from before an update - devices made
+    // before it, or a service that kept running.
+    pad->driverVersion = DriverVersion(pad->xusb);
+    const int running = (int)response.Version < pad->driverVersion ? (int)response.Version : pad->driverVersion;
+    if (running < status.version) {
+        SetError(error, "EASYCONTROL_DRIVER_RESTART_NEEDED", "The gamepad driver " + std::to_string(status.version) +
+            " is installed, but version " + std::to_string(running) +
+            " still runs; destroy every gamepad and try again in a minute, or run Gamepad.installDriver()");
         WinPadDestroy(pad);
         return nullptr;
     }
@@ -342,6 +418,7 @@ void WinPadDestroy(WinPad* pad) {
     if (pad == nullptr) {
         return;
     }
+    WinPadStopOutput(pad);
     if (pad->hid != INVALID_HANDLE_VALUE) {
         CloseHandle(pad->hid);
     }
@@ -351,6 +428,9 @@ void WinPadDestroy(WinPad* pad) {
     // the service unplugs the pad when its connection closes
     if (pad->pipe != INVALID_HANDLE_VALUE) {
         CloseHandle(pad->pipe);
+    }
+    if (pad->stopEvent != NULL) {
+        CloseHandle(pad->stopEvent);
     }
     delete pad;
 }
@@ -366,7 +446,11 @@ static const UINT16 ButtonBits[17] = {
     0x0400                              // guide
 };
 
-bool WinPadSetButton(WinPad* pad, int button, bool isDown) {
+bool WinPadSend(WinPad* pad) {
+    return SendState(pad);
+}
+
+bool WinPadSetButton(WinPad* pad, int button, bool isDown, bool isSent) {
     if (button == 6) {
         pad->state.LeftTrigger = isDown ? 255 : 0;
     } else if (button == 7) {
@@ -376,10 +460,10 @@ bool WinPadSetButton(WinPad* pad, int button, bool isDown) {
     } else {
         pad->state.Buttons &= (UINT16)~ButtonBits[button];
     }
-    return SendState(pad);
+    return !isSent || SendState(pad);
 }
 
-bool WinPadSetAxis(WinPad* pad, int axis, double value) {
+bool WinPadSetAxis(WinPad* pad, int axis, double value, bool isSent) {
     const INT16 stick = (INT16)std::lround(value * 32767.0);
     const UINT8 trigger = (UINT8)std::lround((value + 1.0) * 127.5);
     switch (axis) {
@@ -390,5 +474,84 @@ bool WinPadSetAxis(WinPad* pad, int axis, double value) {
         case 4: pad->state.LeftTrigger = trigger; break;
         case 5: pad->state.RightTrigger = trigger; break;
     }
-    return SendState(pad);
+    return !isSent || SendState(pad);
+}
+
+
+//
+// rumble
+//
+
+// Waits for one rumble change: a version 3 driver answers when the output
+// differs from `serial`, a version 2 driver is asked after a pause. False when
+// stopped or the device is gone.
+static bool NextOutput(WinPad* pad, HANDLE xusb, OVERLAPPED& overlapped, UINT32& serial, EASYCONTROL_PAD_OUTPUT& output) {
+    const bool canWait = pad->driverVersion >= 3;
+    if (!canWait && WaitForSingleObject(pad->stopEvent, OUTPUT_POLL_MS) == WAIT_OBJECT_0) {
+        return false;
+    }
+    EASYCONTROL_PAD_OUTPUT_EVENT event = {};
+    DWORD returned = 0;
+    ResetEvent(overlapped.hEvent);
+    BOOL isDone = canWait
+        ? DeviceIoControl(xusb, EASYCONTROL_IOCTL_WAIT_OUTPUT, &serial, sizeof(serial), &event, sizeof(event), &returned, &overlapped)
+        : DeviceIoControl(xusb, EASYCONTROL_IOCTL_GET_OUTPUT, nullptr, 0, &event.Output, sizeof(event.Output), &returned, &overlapped);
+    if (!isDone && GetLastError() == ERROR_IO_PENDING) {
+        HANDLE handles[2] = { pad->stopEvent, overlapped.hEvent };
+        if (WaitForMultipleObjects(2, handles, FALSE, INFINITE) == WAIT_OBJECT_0) {
+            CancelIoEx(xusb, &overlapped);
+            GetOverlappedResult(xusb, &overlapped, &returned, TRUE);
+            return false;
+        }
+        isDone = GetOverlappedResult(xusb, &overlapped, &returned, FALSE);
+    }
+    if (!isDone || returned != (canWait ? sizeof(event) : sizeof(event.Output))) {
+        return false;
+    }
+    if (canWait) {
+        serial = event.Serial;
+    }
+    output = event.Output;
+    return true;
+}
+
+static void OutputLoop(WinPad* pad) {
+    HANDLE xusb = CreateFileW(pad->xusbPath.c_str(), GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
+        nullptr, OPEN_EXISTING, FILE_FLAG_OVERLAPPED, nullptr);
+    if (xusb == INVALID_HANDLE_VALUE) {
+        return;
+    }
+    OVERLAPPED overlapped = {};
+    overlapped.hEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    UINT32 serial = 0;
+    EASYCONTROL_PAD_OUTPUT last = {};
+    EASYCONTROL_PAD_OUTPUT output = {};
+    while (overlapped.hEvent != NULL && NextOutput(pad, xusb, overlapped, serial, output)) {
+        if (output.LeftMotor != last.LeftMotor || output.RightMotor != last.RightMotor) {
+            last = output;
+            pad->outputCallback(pad->outputContext, output.LeftMotor, output.RightMotor);
+        }
+    }
+    if (overlapped.hEvent != NULL) {
+        CloseHandle(overlapped.hEvent);
+    }
+    CloseHandle(xusb);
+}
+
+void WinPadStartOutput(WinPad* pad, WinPadOutputCallback callback, void* context) {
+    WinPadStopOutput(pad);
+    if (pad->stopEvent == NULL) {
+        pad->stopEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    }
+    ResetEvent(pad->stopEvent);
+    pad->outputCallback = callback;
+    pad->outputContext = context;
+    pad->outputThread = std::thread(OutputLoop, pad);
+}
+
+void WinPadStopOutput(WinPad* pad) {
+    if (pad->outputThread.joinable()) {
+        SetEvent(pad->stopEvent);
+        pad->outputThread.join();
+    }
 }

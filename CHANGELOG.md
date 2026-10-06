@@ -1,5 +1,52 @@
 # Changelog
 
+## 0.12.0
+
+What a remote desktop needs from the library: movement games and pointer-locked pages read, smooth scrolling,
+batched gamepad state and rumble, and knowing why input does not land.
+
+### Added
+
+- `Mouse.moveBy(dx, dy)`: relative movement in mouse counts, which pointer-locked pages (`movementX`/`movementY`)
+  and games read - `setPosition` never reaches them. On Wayland through a relative virtual mouse of its own.
+- `Mouse.scroll(x, y)`: scrolling by fractions of a notch, with `WheelEvent`'s signs (Windows and Wayland: 120ths
+  of a notch, macOS: points, X11: added up to whole notches).
+- `Keyboard.getLockState()`: `{ capsLock, numLock, scrollLock }`.
+- `Keyboard.getLayout()` / `setLayout()`, the same functions as `GetLayout` / `SetLayout`, which stay.
+- `Platform.getInputBlock()`: why input would not arrive now - `"secure-desktop"`, `"elevated-window"` (Windows),
+  `"secure-input"` (macOS), `"no-permission"` (macOS, Wayland) - or null.
+- `gamepad.setState({ buttons, axes })`: many changes in one report; a browser `Gamepad` can be passed as it is,
+  analog triggers included.
+- `gamepad.onRumble`: what games set the rumble motors to, on Windows and Linux.
+- Driver versions (Windows): `getDriverStatus()` has `available` (the driver in this package) and
+  `isUpdateAvailable`; `create()` rejects with `EASYCONTROL_DRIVER_RESTART_NEEDED` when an older driver or service
+  than the installed one still runs; `installDriver({ force })`.
+- The gamepad driver 3: tells rumble as it changes (driver 2 is asked every 16 ms) and its own version.
+
+### Fixed
+
+- macOS: two quick clicks are a double click (the events carry the click count); drags carry it too.
+- `Keyboard.type`: `"\n"`, `"\r\n"` (once), `"\t"`, `"\b"` and `"\x1b"` press Enter, Tab, Backspace and
+  Escape - before, Windows and macOS sent them as characters (macOS on the A key's code), so applications saw no
+  Enter. `type("")` does nothing instead of throwing.
+- Releasing held keys and buttons when a worker thread ended released the main thread's too.
+- `scrollDown`/`scrollUp` with a huge amount hung X11 and overflowed on Windows; more than 10000 notches is now a
+  `RangeError`.
+- Linux: input sent to a new gamepad right after `create()` was lost.
+- Wayland: `Mouse.setPosition` made two round trips to the compositor for the screen layout each time; it now
+  reads what changed without waiting.
+- macOS: moves carry their distance in the event's delta fields.
+
+### Behaviour changes
+
+- Windows: input the system refuses (`SendInput` sending nothing, the pointer not to be read or set - the secure
+  desktop) throws an Error with code `EASYCONTROL_INPUT_BLOCKED` instead of passing silently; `getX`/`getY` throw
+  instead of returning 0, on every platform.
+- `getDriverStatus().required` is now the oldest driver this version works with (2), not the newest; a newer
+  driver serves older versions, so 0.12.0 needs no reinstall. `installDriver()` no longer replaces a newer
+  installed driver without `{ force: true }`.
+- The Linux gamepad takes force feedback (rumble) requests.
+
 ## 0.11.0
 
 The first release whose builds of every target come from CI and pass its tests: 0.10.0's macOS and Linux builds

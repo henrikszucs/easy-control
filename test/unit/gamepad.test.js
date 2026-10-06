@@ -7,9 +7,11 @@
 
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs/promises";
 import os from "node:os";
+import path from "node:path";
 
-import { Gamepad } from "./helpers.js";
+import { Gamepad, distPath, platformDir } from "./helpers.js";
 
 const BUTTON_COUNT = 17;
 const AXIS_COUNT = 6;
@@ -53,23 +55,42 @@ test("a gamepad is only made by Gamepad.create", function() {
 
 test("getDriverStatus reports the driver", function() {
     const status = Gamepad.getDriverStatus();
-    assert.deepEqual(Object.keys(status).sort(), ["isInstalled", "isOutdated", "required", "version"]);
+    assert.deepEqual(Object.keys(status).sort(), ["available", "isInstalled", "isOutdated", "isUpdateAvailable", "required", "version"]);
     assert.equal(typeof status["isInstalled"], "boolean");
     assert.equal(typeof status["isOutdated"], "boolean");
+    assert.equal(typeof status["isUpdateAvailable"], "boolean");
     if (os.platform() === "win32") {
-        assert.ok(Number.isInteger(status["required"]) && status["required"] >= 1);
+        assert.ok(Number.isInteger(status["required"]) && status["required"] >= 2);
+        assert.ok(Number.isInteger(status["available"]) && status["available"] >= status["required"],
+            "the driver beside the addon is one it works with");
         if (status["isInstalled"]) {
             assert.ok(Number.isInteger(status["version"]));
             assert.equal(status["isOutdated"], status["version"] < status["required"]);
+            assert.equal(status["isUpdateAvailable"], status["version"] < status["available"]);
         } else {
             assert.equal(status["version"], null);
             assert.equal(status["isOutdated"], false);
+            assert.equal(status["isUpdateAvailable"], false);
         }
     } else {
         // nothing to install elsewhere
         assert.equal(status["isInstalled"], true);
         assert.equal(status["isOutdated"], false);
+        assert.equal(status["isUpdateAvailable"], false);
+        assert.equal(status["available"], null);
     }
+});
+
+test("the driver files beside the addon are the version it was built with", { "skip": os.platform() !== "win32" && "the driver is Windows only" }, async function() {
+    const file = JSON.parse(await fs.readFile(path.join(distPath, platformDir, "gamepad", "version.json"), "utf8"));
+    const header = await fs.readFile(path.join(distPath, "..", "src", "native", "windows-gamepad", "common", "easycontrol_pad.h"), "utf8");
+    const version = Number(header.match(/#define EASYCONTROL_PAD_VERSION (\d+)/)[1]);
+    assert.equal(file["version"], version, "npm run build:gamepad after changing the driver");
+    assert.equal(Gamepad.getDriverStatus()["available"], version);
+});
+
+test("installDriver rejects options that are no object, without starting the setup", async function() {
+    await assert.rejects(Gamepad.installDriver("force"), TypeError);
 });
 
 test("without the driver, create rejects with EASYCONTROL_DRIVER_MISSING", {
@@ -136,6 +157,56 @@ test("buttons and axes reject bad indices and values", { "skip": skipNoDriver },
     } finally {
         gamepad.destroy();
     }
+});
+
+test("setState takes buttons and axes at once, a browser Gamepad's shape included", { "skip": skipNoDriver }, async function() {
+    const gamepad = await Gamepad.create();
+    try {
+        gamepad.setState({ "buttons": [true, false, 1, 0, { "pressed": true, "value": 1 }, { "value": 0.2 }, 0.5, { "pressed": false, "value": 0 }],
+            "axes": [0.5, -0.5, 0, 1, -1, 1] });
+        gamepad.setState({ "axes": [0, 0, 0, 0, -1, -1] });
+        // more entries than the pad has, holes and nulls are fine
+        gamepad.setState({ "buttons": new Array(20).fill(false), "axes": [null, undefined, , 0] });
+        gamepad.setState({});
+    } finally {
+        gamepad.destroy();
+    }
+});
+
+test("setState checks everything before changing anything", { "skip": skipNoDriver }, async function() {
+    const gamepad = await Gamepad.create();
+    try {
+        assert.throws(function() { gamepad.setState(); }, TypeError);
+        assert.throws(function() { gamepad.setState(1); }, TypeError);
+        assert.throws(function() { gamepad.setState({ "buttons": true }); }, { "name": "TypeError", "message": /buttons/ });
+        assert.throws(function() { gamepad.setState({ "buttons": ["x"] }); }, { "name": "TypeError", "message": /buttons\[0\]/ });
+        assert.throws(function() { gamepad.setState({ "buttons": [1.5] }); }, { "name": "RangeError", "message": /buttons\[0\]/ });
+        assert.throws(function() { gamepad.setState({ "axes": [0, 2] }); }, { "name": "RangeError", "message": /axes\[1\]/ });
+        assert.throws(function() { gamepad.setState({ "axes": ["0"] }); }, TypeError);
+    } finally {
+        gamepad.destroy();
+    }
+    assert.throws(function() { gamepad.setState({}); }, { "message": "Gamepad is not active" });
+});
+
+test("onRumble takes a listener or null", { "skip": skipNoDriver }, async function() {
+    const gamepad = await Gamepad.create();
+    try {
+        assert.equal(gamepad.onRumble, null);
+        const listener = function() {};
+        gamepad.onRumble = listener;
+        assert.equal(gamepad.onRumble, listener);
+        gamepad.onRumble = function() {};
+        gamepad.onRumble = null;
+        assert.equal(gamepad.onRumble, null);
+        assert.throws(function() { gamepad.onRumble = 1; }, TypeError);
+        gamepad.onRumble = listener;
+    } finally {
+        gamepad.destroy();
+    }
+    assert.equal(gamepad.onRumble, null, "destroy drops the listener");
+    assert.throws(function() { gamepad.onRumble = function() {}; }, { "message": "Gamepad is not active" });
+    gamepad.onRumble = null;
 });
 
 test("several gamepads can be plugged in at once", { "skip": skipNoDriver }, async function() {

@@ -873,7 +873,10 @@ static bool SendKey(Napi::Env env, const std::string& key, bool isDown) {
 
     #if defined(IS_WINDOWS)
         INPUT input = ScanCodeInput(it->second, !isDown);
-        SendInput(1, &input, sizeof(INPUT));
+        if (SendInput(1, &input, sizeof(INPUT)) != 1) {
+            ThrowInputBlocked(env, "SendInput sent nothing");
+            return false;
+        }
 
     #elif defined(IS_MACOS)
         if (!PostKey(it->second, isDown)) {
@@ -948,10 +951,40 @@ Napi::Boolean Keyboard::isKeySupported(const Napi::CallbackInfo& info) {
     return Napi::Boolean::New(env, it != SpecialKeys.end());
 }
 
+#if defined(IS_WINDOWS) || defined(IS_MACOS)
+// The key a control character in type()'s text presses ("\n" Enter, ...), by
+// its code; nullptr for any other character. Typed as characters, they would
+// reach applications as text, not as the keys (macOS would even report the
+// A key, whose key code the text events borrow). Linux finds them on the
+// layout by their keysyms (CodepointToKeysym).
+static const char* ControlCharacterKey(uint32_t codepoint) {
+    switch (codepoint) {
+        case '\n':
+        case '\r':
+            return "Enter";
+        case '\t':
+            return "Tab";
+        case '\b':
+            return "Backspace";
+        case 0x1B:
+            return "Escape";
+    }
+    return nullptr;
+}
+#endif
+
 void Keyboard::type(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
-    std::string text;
-    if (!ParseKey(info, text)) {
+    if (info.Length() < 1) {
+        Napi::TypeError::New(env, "Expected 1 argument").ThrowAsJavaScriptException();
+        return;
+    }
+    if (!info[0].IsString()) {
+        Napi::TypeError::New(env, "Expected string argument").ThrowAsJavaScriptException();
+        return;
+    }
+    const std::string text = info[0].As<Napi::String>().Utf8Value();
+    if (text.empty()) {
         return;
     }
 
@@ -965,10 +998,22 @@ void Keyboard::type(const Napi::CallbackInfo& info) {
         MultiByteToWideChar(CP_UTF8, 0, text.c_str(), (int)text.length(), &wide[0], wideSize);
 
         // a press and a release per UTF-16 unit; a surrogate pair goes as its
-        // two units in a row, which Windows puts back together
+        // two units in a row, which Windows puts back together. Control
+        // characters press their keys, "\r\n" one Enter.
         std::vector<INPUT> inputs;
         inputs.reserve(wide.length() * 2);
-        for (wchar_t unit : wide) {
+        for (size_t i = 0; i < wide.length(); i++) {
+            const wchar_t unit = wide[i];
+            const char* controlKey = ControlCharacterKey((uint32_t)unit);
+            if (controlKey != nullptr) {
+                const WORD code = SpecialKeys.at(controlKey);
+                inputs.push_back(ScanCodeInput(code, false));
+                inputs.push_back(ScanCodeInput(code, true));
+                if (unit == L'\r' && i + 1 < wide.length() && wide[i + 1] == L'\n') {
+                    i++;
+                }
+                continue;
+            }
             INPUT input = {0};
             input.type = INPUT_KEYBOARD;
             input.ki.wVk = 0;
@@ -978,7 +1023,9 @@ void Keyboard::type(const Napi::CallbackInfo& info) {
             input.ki.dwFlags = KEYEVENTF_UNICODE | KEYEVENTF_KEYUP;
             inputs.push_back(input);
         }
-        SendInput((UINT)inputs.size(), inputs.data(), sizeof(INPUT));
+        if (SendInput((UINT)inputs.size(), inputs.data(), sizeof(INPUT)) != (UINT)inputs.size()) {
+            ThrowInputBlocked(env, "SendInput did not send all of the text");
+        }
 
     #elif defined(IS_MACOS)
         // Convert UTF-8 string to UTF-16 for macOS
@@ -1003,9 +1050,16 @@ void Keyboard::type(const Napi::CallbackInfo& info) {
             }
             i += count;
 
-            // Create a Unicode keyboard event
-            CGEventRef keyDownEvent = CGEventCreateKeyboardEvent(EventSource(), 0, true);
-            CGEventRef keyUpEvent = CGEventCreateKeyboardEvent(EventSource(), 0, false);
+            // a control character presses its key ("\r\n" one Enter); any
+            // other goes as text on key code 0
+            const char* controlKey = count == 1 ? ControlCharacterKey(characters[0]) : nullptr;
+            const CGKeyCode keycode = controlKey != nullptr ? SpecialKeys.at(controlKey) : 0;
+            if (characters[0] == '\r' && i < length && CFStringGetCharacterAtIndex(cfString, i) == '\n') {
+                i++;
+            }
+
+            CGEventRef keyDownEvent = CGEventCreateKeyboardEvent(EventSource(), keycode, true);
+            CGEventRef keyUpEvent = CGEventCreateKeyboardEvent(EventSource(), keycode, false);
 
             if (keyDownEvent == NULL || keyUpEvent == NULL) {
                 if (keyDownEvent != NULL) CFRelease(keyDownEvent);
@@ -1019,9 +1073,10 @@ void Keyboard::type(const Napi::CallbackInfo& info) {
             CGEventSetFlags(keyDownEvent, 0);
             CGEventSetFlags(keyUpEvent, 0);
 
-            // Set the Unicode character for the event
-            CGEventKeyboardSetUnicodeString(keyDownEvent, count, characters);
-            CGEventKeyboardSetUnicodeString(keyUpEvent, count, characters);
+            if (controlKey == nullptr) {
+                CGEventKeyboardSetUnicodeString(keyDownEvent, count, characters);
+                CGEventKeyboardSetUnicodeString(keyUpEvent, count, characters);
+            }
 
             // Post the events
             CGEventPost(kCGHIDEventTap, keyDownEvent);
@@ -1074,7 +1129,17 @@ void Keyboard::type(const Napi::CallbackInfo& info) {
         std::string missing;
         std::string error;
 
-        for (uint32_t codepoint : DecodeUtf8(text)) {
+        // "\r\n" is one Enter, as on the other platforms
+        std::vector<uint32_t> codepoints = DecodeUtf8(text);
+        for (size_t i = 1; i < codepoints.size(); ) {
+            if (codepoints[i] == '\n' && codepoints[i - 1] == '\r') {
+                codepoints.erase(codepoints.begin() + i);
+            } else {
+                i++;
+            }
+        }
+
+        for (uint32_t codepoint : codepoints) {
             const KeySym keysym = CodepointToKeysym(codepoint);
 
             // on the layout, at any level up to Shift+AltGr
@@ -1385,6 +1450,49 @@ void Keyboard::SetLayout(const Napi::CallbackInfo& info) {
     #endif
 }
 
+// Keyboard.getLockState(): { capsLock, numLock, scrollLock }, whether each is
+// on - so a remote session can bring them in line with the other side's
+Napi::Value Keyboard::getLockState(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    bool capsLock = false;
+    bool numLock = false;
+    bool scrollLock = false;
+
+    #if defined(IS_WINDOWS)
+        // the low bit is the toggle; the system's, as this thread reads no
+        // keyboard messages of its own
+        capsLock = (GetKeyState(VK_CAPITAL) & 1) != 0;
+        numLock = (GetKeyState(VK_NUMLOCK) & 1) != 0;
+        scrollLock = (GetKeyState(VK_SCROLL) & 1) != 0;
+
+    #elif defined(IS_MACOS)
+        // Mac keyboards have Caps Lock only
+        capsLock = (CGEventSourceFlagsState(kCGEventSourceStateHIDSystemState) & kCGEventFlagMaskAlphaShift) != 0;
+
+    #elif defined(IS_LINUX)
+        // the keyboard indicators, by name; on Wayland XWayland's, which follow
+        // the compositor's
+        Display* display = RequireDisplay(env);
+        if (display == NULL) {
+            return env.Undefined();
+        }
+        const auto isOn = [display](const char* name) {
+            Bool on = False;
+            const Atom atom = XInternAtom(display, name, True);
+            return atom != None && XkbGetNamedIndicator(display, atom, NULL, &on, NULL, NULL) && on;
+        };
+        capsLock = isOn("Caps Lock");
+        numLock = isOn("Num Lock");
+        scrollLock = isOn("Scroll Lock");
+    #endif
+
+    Napi::Object result = Napi::Object::New(env);
+    result.Set("capsLock", capsLock);
+    result.Set("numLock", numLock);
+    result.Set("scrollLock", scrollLock);
+    return result;
+}
+
 Napi::Object Keyboard::Init(Napi::Env env, Napi::Object exports) {
     Napi::Object obj = Napi::Object::New(env);
     obj.Set(Napi::String::New(env, "keyDown"), Napi::Function::New(env, Keyboard::keyDown));
@@ -1392,7 +1500,13 @@ Napi::Object Keyboard::Init(Napi::Env env, Napi::Object exports) {
     obj.Set(Napi::String::New(env, "releaseAll"), Napi::Function::New(env, Keyboard::releaseAll));
     obj.Set(Napi::String::New(env, "isKeySupported"), Napi::Function::New(env, Keyboard::isKeySupported));
     obj.Set(Napi::String::New(env, "type"), Napi::Function::New(env, Keyboard::type));
-    obj.Set(Napi::String::New(env, "GetLayout"), Napi::Function::New(env, Keyboard::GetLayout));
-    obj.Set(Napi::String::New(env, "SetLayout"), Napi::Function::New(env, Keyboard::SetLayout));
+    obj.Set(Napi::String::New(env, "getLockState"), Napi::Function::New(env, Keyboard::getLockState));
+    // getLayout/setLayout, and the same functions by their old names
+    Napi::Function getLayout = Napi::Function::New(env, Keyboard::GetLayout);
+    Napi::Function setLayout = Napi::Function::New(env, Keyboard::SetLayout);
+    obj.Set(Napi::String::New(env, "getLayout"), getLayout);
+    obj.Set(Napi::String::New(env, "setLayout"), setLayout);
+    obj.Set(Napi::String::New(env, "GetLayout"), getLayout);
+    obj.Set(Napi::String::New(env, "SetLayout"), setLayout);
     return obj;
 }

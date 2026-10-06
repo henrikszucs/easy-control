@@ -2,8 +2,13 @@
     easy-control virtual gamepad - driver setup
 
         easy-control-gamepad-setup.ps1 install      (as administrator)
+        easy-control-gamepad-setup.ps1 install -Force
         easy-control-gamepad-setup.ps1 uninstall    (as administrator)
         easy-control-gamepad-setup.ps1 status       prints JSON
+
+    install does not replace a newer installed version (exit code 2): a newer
+    driver serves older apps too (see common/easycontrol_pad.h), and other apps
+    on the machine may need it. -Force installs this one anyway.
 
     Gamepad.installDriver() runs it elevated, behind one UAC prompt.
 
@@ -22,7 +27,8 @@
 param(
     [Parameter(Position = 0)]
     [ValidateSet("install", "uninstall", "status")]
-    [string]$Action = "status"
+    [string]$Action = "status",
+    [switch]$Force
 )
 
 $ErrorActionPreference = "Stop"
@@ -42,6 +48,9 @@ $CertSubject = "CN=easy-control local driver signer"
 $Packages = @("easycontrol_gamepad", "easycontrol_xusb")
 $PackageMarker = "easycontrol_gamepad.dll"
 $LogFile = Join-Path $env:ProgramData "easy-control\gamepad-setup.log"
+# the exit code of install when a newer version is installed
+$ExitNewerInstalled = 2
+$script:ExitCode = 0
 
 function Write-Log([string]$Message) {
     $line = (Get-Date -Format "yyyy-MM-dd HH:mm:ss") + "  " + $Message
@@ -88,8 +97,22 @@ function Add-ToStore($Certificate, [string]$StoreName) {
     try { $store.Add($Certificate) } finally { $store.Close() }
 }
 
+# the installed version (the registry's, written last by install); $null when none
+function Get-InstalledVersion {
+    if (-not (Test-Path $RegistryKey)) {
+        return $null
+    }
+    return (Get-ItemProperty $RegistryKey -Name "Version" -ErrorAction SilentlyContinue).Version
+}
+
 function Install-Gamepad {
     Assert-Administrator
+    $installed = Get-InstalledVersion
+    if (($null -ne $installed) -and ([int]$installed -gt [int]$PadVersion) -and -not $Force) {
+        Write-Log "Not installing version $PadVersion over the newer $installed, which serves this app too (-Force does)"
+        $script:ExitCode = $ExitNewerInstalled
+        return
+    }
     Write-Log "Installing the easy-control virtual gamepad $PadVersion"
 
     # an earlier version goes first, so nothing of it is left behind
@@ -222,14 +245,18 @@ function Uninstall-Gamepad([switch]$Quiet) {
 }
 
 function Get-GamepadStatus {
-    $version = $null
-    if (Test-Path $RegistryKey) {
-        $version = (Get-ItemProperty $RegistryKey -Name "Version" -ErrorAction SilentlyContinue).Version
-    }
+    $version = Get-InstalledVersion
     [ordered]@{
         "installed" = ($null -ne $version) -and ($null -ne (Get-Service -Name $ServiceName -ErrorAction SilentlyContinue))
         "version" = $version
+        "packageVersion" = [int]$PadVersion
         "driverPackages" = @(Get-InstalledInfs | ForEach-Object { $_.Name })
+        # what the driver store holds, from each package's DriverVer
+        # ("date,<easy-control version>.<pad version>"): the version that binds
+        "driverVersions" = @(Get-InstalledInfs | ForEach-Object {
+            $line = Select-String -Path $_.FullName -Pattern '^\s*DriverVer\s*=\s*(.+)$' | Select-Object -First 1
+            if ($null -ne $line) { $line.Matches[0].Groups[1].Value.Trim() }
+        })
         "certificates" = @(Get-OurCertificates | ForEach-Object { $_.PSParentPath.Split("\")[-1] + ":" + $_.Thumbprint })
     } | ConvertTo-Json -Compress
 }
@@ -240,7 +267,7 @@ try {
         "uninstall" { Uninstall-Gamepad }
         "status" { Get-GamepadStatus }
     }
-    exit 0
+    exit $script:ExitCode
 } catch {
     Write-Log ("Failed: " + $_.Exception.Message + "`r`n" + $_.InvocationInfo.PositionMessage + "`r`n" + $_.ScriptStackTrace)
     exit 1

@@ -24,4 +24,12 @@
     return [SwiftCode setAxis:gamepadId axis:axisId value:value];
 }
 
++ (BOOL)beginUpdate:(int)gamepadId {
+    return [SwiftCode beginUpdate:gamepadId];
+}
+
++ (BOOL)endUpdate:(int)gamepadId {
+    return [SwiftCode endUpdate:gamepadId];
+}
+
 @end

@@ -47,6 +47,17 @@ await Platform.requestInputAccess();
 // macOS: shows the system prompt pointing to System Settings > Privacy & Security > Accessibility, and
 // resolves with the access there is now - false until the user allows it, so check hasInputAccess() again
 // later. Elsewhere it resolves with hasInputAccess() at once.
+
+Platform.getInputBlock();
+// null when input sent now should arrive, else why not:
+//   "secure-desktop"   Windows: a UAC prompt, the lock or sign-in screen, Ctrl+Alt+Del
+//   "elevated-window"  Windows: the window in front belongs to a process run as administrator (UIPI)
+//   "secure-input"     macOS: a password field has turned on secure keyboard entry (keys are dropped,
+//                      the mouse works)
+//   "no-permission"    macOS: no Accessibility permission; Wayland: /dev/uinput is not writable
+// Cheap enough to poll about once a second, e.g. to tell the other side of a remote session why its input
+// does not land. On Windows, input the system refuses outright (the secure desktop) also makes the call
+// throw an Error with code "EASYCONTROL_INPUT_BLOCKED".
 ```
 
 Keys and mouse buttons pressed through easy-control and still down when the process ends are released (on exit,
@@ -69,6 +80,8 @@ files, which the driver setup must find as real files:
 ```js
 const x = Mouse.getX();
 const y = Mouse.getY();
+// throw when the position cannot be read (Windows: while the secure desktop shows, code
+// "EASYCONTROL_INPUT_BLOCKED")
 
 const icon = Mouse.getIcon();
 /*
@@ -93,6 +106,12 @@ Mouse.setPosition(x, y);    // move in one step
 Mouse.setX(x);
 Mouse.setY(y);
 
+Mouse.moveBy(dx, dy);
+// moves by a distance in mouse counts, as a mouse does: what pointer-locked pages (movementX/movementY)
+// and games read, which setPosition never makes. The system's pointer speed and acceleration apply to the
+// visible pointer, so the distance in pixels may differ. Fractions are added to the next call; at most
+// 100000 either way.
+
 Mouse.buttonDown(btn);  // "right" | "middle" | "left" | "back" | "forward"
 Mouse.buttonUp(btn);    // "right" | "middle" | "left" | "back" | "forward"
 Mouse.releaseAll();     // releases every button buttonDown pressed and buttonUp did not release yet
@@ -100,8 +119,14 @@ Mouse.releaseAll();     // releases every button buttonDown pressed and buttonUp
 Mouse.scrollDown(amount, isHorizontal);    // down, or right when isHorizontal is true
 Mouse.scrollUp(amount, isHorizontal);      // up, or left when isHorizontal is true
 // Both arguments are required. amount is in wheel notches; a fraction is dropped, a negative amount scrolls
-// the other way, 0 does nothing. Pixel deltas (e.g. from a browser's wheel event) can be added up in JS and
-// sent a notch at a time.
+// the other way, 0 does nothing; at most 10000.
+
+Mouse.scroll(x, y);
+// scrolls by wheel notches, fractions included - for touchpads and a browser's pixel wheel events
+// (Chromium scrolls about 100 px a notch on Windows, so Mouse.scroll(event.deltaX / 100, event.deltaY / 100)).
+// Positive x scrolls right, positive y down: the signs of WheelEvent.deltaX/deltaY. Windows and Wayland
+// send 120ths of a notch, macOS scrolls by points (40 a notch, as far as Chromium scrolls a notch); X11 has
+// whole notches only, so there the fractions add up until one is reached.
 ```
 
 ### Keyboard
@@ -121,7 +146,8 @@ Keyboard.releaseAll();      // releases every key keyDown pressed and keyUp did 
 
 Keyboard.type(text);
 // Enters text as it is, whatever the layout: "ő€日本😀" types the same on every layout. Use it for text,
-// keyDown/keyUp for keys and shortcuts.
+// keyDown/keyUp for keys and shortcuts. "\n" (and "\r\n"), "\t", "\b" and "\x1b" press Enter, Tab,
+// Backspace and Escape, so pasted lines arrive as lines; an empty string does nothing.
 // Linux types each character with the key that makes it on the current layout, Shift and AltGr included
 // (on a Hungarian layout "@" is AltGr+V). A character the layout has no key for is put on a spare key on X11;
 // on Wayland it is skipped and the call throws naming it, once the rest is typed, unless:
@@ -129,8 +155,13 @@ Keyboard.type(text, { "unicodeFallback": true });
 // enters those characters with Ctrl+Shift+U and their code point, which GTK and IBus applications
 // understand - other applications get stray characters or shortcuts, hence it is off by default.
 
-const layout = Keyboard.GetLayout();
-Keyboard.SetLayout(layout);
+const locks = Keyboard.getLockState();   // { capsLock, numLock, scrollLock }: whether each is on
+// so a remote session can bring them in line with the other side's (press "CapsLock" when they differ);
+// macOS keyboards have Caps Lock only, the other two are false there
+
+const layout = Keyboard.getLayout();
+Keyboard.setLayout(layout);
+// (GetLayout and SetLayout are the same functions by their old names)
 // The current keyboard layout, as the platform names it:
 //   Windows: the layout ID (KLID) of the window the input goes to, e.g. "00000409" (US), "0000040E" (Hungarian),
 //            see https://learn.microsoft.com/windows-hardware/manufacture/desktop/windows-language-pack-default-values
@@ -192,6 +223,21 @@ gamepad1.buttonDown(btn=0);
 gamepad1.buttonUp(btn=0);
 gamepad1.setAxis(axis=0, direction=0);
 
+gamepad1.setState({ buttons: [true, false, 0.5], axes: [0, -1] });
+// many buttons and axes in one report: once per frame, rather than a call per change (on Windows each call
+// is a round trip to the driver). A browser Gamepad from navigator.getGamepads() can be passed as it is.
+// Buttons: booleans, numbers 0-1 or { pressed, value }; buttons 6 and 7, the triggers, take their analog
+// value; axes 4 and 5 drive the same triggers and, coming after the buttons, win. null, undefined and
+// missing entries keep their value; entries past 17 buttons and 6 axes are ignored.
+
+gamepad1.onRumble = function({ strong, weak }) {
+    // a game set the rumble motors, 0-1 each (strong: the low frequency one); 0, 0 when it stops.
+    // A remote session plays it on the other side: navigator.getGamepads()[i].vibrationActuator
+    //     .playEffect("dual-rumble", { strongMagnitude: strong, weakMagnitude: weak, duration: ... })
+};
+gamepad1.onRumble = null;   // none. Windows and Linux; on macOS it is never called. It does not keep
+                            // the process alive.
+
 gamepad1.destroy();     // unplugs it; isActive() is false after, and its methods throw
 
 /*
@@ -232,7 +278,14 @@ Values for a standard Xbox360 controller:
 // the Windows driver; on macOS and Linux there is nothing to install, so these report it
 // installed and resolve at once
 const status = Gamepad.getDriverStatus();
-// { isInstalled: true, version: 1, required: 1, isOutdated: false }
+// {
+//     isInstalled: true,
+//     version: 2,                 // the installed one; null when none
+//     required: 2,                // the oldest this easy-control works with
+//     available: 3,               // the one installDriver() installs (in this package)
+//     isOutdated: false,          // version < required: create() rejects until installDriver()
+//     isUpdateAvailable: true     // version < available: it works, an update brings new features or fixes
+// }
 await Gamepad.installDriver();      // installs or updates it, behind one UAC prompt
 await Gamepad.uninstallDriver();    // removes it, behind one UAC prompt
 ```
@@ -247,7 +300,7 @@ limit). Windows 10 1903 or later, x64 and ARM64. Windows Server editions lack Mi
 (`xinputhid.sys`): there the gamepad works for XInput, but Windows.Gaming.Input - and so Chromium and Electron -
 do not see it.
 
-An application can offer the install when it is missing:
+An application can offer the install when it is missing, and an update when one is available:
 
 ```js
 let gamepad;
@@ -261,7 +314,31 @@ try {
         throw error;
     }
 }
+if (Gamepad.getDriverStatus().isUpdateAvailable) {
+    // optional: the installed driver works; offer the update when it suits the user
+}
 ```
+
+#### Driver versions
+
+The driver is installed once per machine and shared by every application on it, each with its own
+easy-control version. A newer driver serves older easy-control versions too, so:
+
+- `required` is the oldest driver this easy-control works with. Only below it does `create()` reject
+  (`EASYCONTROL_DRIVER_OUTDATED`), so a new easy-control version rarely forces a reinstall.
+- `available` is the driver in this package. A newer driver brings new features or fixes - rumble, for one,
+  is told the moment it changes from driver 3 on, and asked for every 16 ms from driver 2 - and
+  `isUpdateAvailable` says one is there.
+- `installDriver()` does not replace a newer installed driver (it resolves at once, with no prompt), as
+  another application may need it; `installDriver({ force: true })` does. The setup script refuses the same
+  when run by hand, unless given `-Force`.
+- An install unplugs the gamepads of every application, as it stops the service.
+- `create()` also compares what runs with what is installed: when the service or the driver still running are
+  older than the installed version (an update while gamepads were plugged in), it rejects with
+  `EASYCONTROL_DRIVER_RESTART_NEEDED`; destroying every gamepad and trying again a minute later (the service
+  stops when idle) or `installDriver()` fixes it.
+- The setup script's `status` reports the installed version, the package's, and the `DriverVer` of the driver
+  packages in the driver store.
 
 `installDriver()` runs `dist/win32-<x64 or arm64>/gamepad/easy-control-gamepad-setup.ps1 install` as administrator. It copies
 the driver and the service to `%ProgramFiles%\easy-control\gamepad`, creates a code signing certificate for this
@@ -275,8 +352,8 @@ The service logs the pads it plugs in and out, and failures with their reason, t
 application asks for a gamepad and stops itself after a minute with none.
 
 `Gamepad.create()` rejects with an Error with one of these `code`s: `EASYCONTROL_DRIVER_MISSING`,
-`EASYCONTROL_DRIVER_OUTDATED`, `EASYCONTROL_NO_SLOT` (4 gamepads already), `EASYCONTROL_SERVICE_FAILED`,
-`EASYCONTROL_CREATE_FAILED`.
+`EASYCONTROL_DRIVER_OUTDATED`, `EASYCONTROL_DRIVER_RESTART_NEEDED`, `EASYCONTROL_NO_SLOT` (4 gamepads already),
+`EASYCONTROL_SERVICE_FAILED`, `EASYCONTROL_CREATE_FAILED`.
 
 
 ### Screen
@@ -329,8 +406,12 @@ and other wlroots compositors, ...).
   output's pixels per logical pixel, and the output at 0,0 is reported as primary - Wayland has no primary output.
   libwayland-client is loaded at run time, so it is no build dependency; without it XRandR (XWayland) is used.
 - `Mouse.setPosition/setX/setY` move an absolute pointer over the bounding box of all screens.
+- `Mouse.moveBy` goes through a third virtual device, "easy-control virtual mouse", a relative one: a compositor
+  gives a locked pointer only relative motion.
 - `Mouse.getX/getY` - Wayland tells no client where the pointer is: they return the position last set through
-  easy-control, and XWayland's idea of it before the first move.
+  easy-control, and XWayland's idea of it before the first move and after `moveBy` (the compositor applies
+  acceleration, so where that leaves the pointer is not known).
+- `Mouse.scroll` sends high-resolution wheel events (Linux 5.0 and later read them).
 - `Mouse.getIcon/getIconId` see only the pointer shapes of XWayland applications.
 - `Keyboard.keyDown/keyUp` press physical keys, as on the other platforms.
 - `Keyboard.type` presses the keys of the current layout, read from XWayland, so it needs XWayland. A character the
@@ -351,7 +432,8 @@ What the operating systems do not let a program do, or do only in part.
   controlling a machine remotely cannot approve a UAC prompt - `Gamepad.installDriver()`'s included - so install
   the driver while someone is at the machine.
 - **Raw Input**: `Mouse.setPosition`/`setX`/`setY` move the pointer, which applications reading Raw Input do not see
-  as mouse movement: many games and pointer-locked web pages. Clicks, scrolling and keys do reach them.
+  as mouse movement: many games and pointer-locked web pages. `Mouse.moveBy` is what they read; clicks,
+  scrolling and keys reach them too.
 - **`Keyboard.type`** sends the characters as Unicode packets, which some games and remote-desktop clients ignore;
   `keyDown`/`keyUp` reach them.
 - **Gamepads**: at most 4 (XInput's limit); kernel-level anti-cheat may refuse virtual ones; on Windows Server
@@ -361,6 +443,9 @@ What the operating systems do not let a program do, or do only in part.
 - Input needs the **Accessibility** permission (System Settings > Privacy & Security > Accessibility) for the app
   that runs easy-control - the terminal for `node`, the app itself for Electron. Without it macOS drops every event,
   without an error.
+- **Secure keyboard entry**: while a password field (or an app, like Terminal with the option on) has it, keys are
+  dropped; `Platform.getInputBlock()` says `"secure-input"`.
+- Gamepad rumble is not reported (the CoreHID gamepad has no rumble that games use).
 - The virtual gamepad needs macOS 26 and an app signed with the `com.apple.developer.hid.virtual.device` entitlement.
 
 ### Linux
@@ -381,6 +466,9 @@ npm run test:driver   # Windows: uninstalls and reinstalls the gamepad driver, t
 
 On Linux, `test/unit/typing-x11.test.js` types into a window of its own with a Hungarian layout, to check characters
 that need AltGr; as it types for real, it runs only with `EASYCONTROL_TYPING_TEST=1` (CI sets it under Xvfb).
+`test/unit/rumble-linux.test.js` rumbles a virtual gamepad as a game does (`ff-client.c`, built with `cc`); it needs
+uinput and read-write access to the gamepad's event device, so it runs only with `EASYCONTROL_RUMBLE_TEST=1` (CI
+sets both up).
 CI (`.github/workflows/build.yml`) builds every target and runs these on Windows, macOS and Linux.
 
 `npm test` checks the loaders, every function's results and argument checks, and the gamepad lifecycle. It moves the
