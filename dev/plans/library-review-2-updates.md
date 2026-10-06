@@ -22,12 +22,20 @@ Verified:
   `test:e2e` (18/18) again on it, and five on-then-off rumble pulses made in microseconds all reported - the
   `WAIT_OUTPUT` path, which polling would miss.
 
-Not verified yet:
-- macOS: nothing of it is compiled until CI runs (click count, delta fields, pixel scroll, secure input,
-  `getLockState`, the Swift `beginUpdate`/`endUpdate`).
-- Linux rumble from a force feedback client: the WSL2 kernel behind Docker has no evdev; CI runs
-  the rumble test of `gamepad.test.js` with uinput set up.
+- CI (run 37475796741, `898ae7c`): every target built and tested - Windows x64 and ARM64 (driver tests, the
+  registry version cases included), macOS (arm64 built and tested, x64 cross-built: the Swift and Objective-C++
+  changes compile), Linux x64 on Node 22 and 24 and ARM64 with uinput set up, so the gamepad tests and the
+  rumble test from a force feedback client ran there. CI found two things: the rumble test picked another test
+  file's pad by name (it moved into `gamepad.test.js`), and windows-arm tested with the loaders last committed
+  to `dist/` (it now rebuilds them).
+
+Not verified on a real desktop (what CI cannot do):
+- macOS input reaching applications (the hosted runner has no Accessibility permission, so those tests skip):
+  double click by click count, `moveBy` under pointer lock, pixel `scroll` (40 points a notch is Chromium's
+  figure, not measured), `"secure-input"`, `getLockState`; and the gamepad's one-report `setState` (macOS 26
+  and an entitled app).
 - Wayland input (relative mouse, hi-res wheel): needs a real compositor.
+- Phase 7: merging, `update-dist`, the `v0.12.0` tag - the maintainer's.
 
 Departures from the plan:
 - 12: `create.Gamepad` stays in the types - the type tests use it for `instanceof`, so removing it would break
