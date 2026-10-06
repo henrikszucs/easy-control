@@ -149,6 +149,18 @@ static HRESULT CreateDevice(PCWSTR enumerator, PCWSTR instanceId, PCWSTR hardwar
     return hr;
 }
 
+// whether this Windows has Microsoft's xinputhid filter driver (Windows
+// Server editions do not)
+static bool HasXinputHid()
+{
+    wchar_t path[MAX_PATH];
+    if (GetSystemDirectoryW(path, MAX_PATH) == 0) {
+        return false;
+    }
+    wcscat_s(path, L"\\drivers\\xinputhid.sys");
+    return GetFileAttributesW(path) != INVALID_FILE_ATTRIBUTES;
+}
+
 struct Pad {
     int slot = -1;
     HSWDEVICE xusb = NULL;
@@ -201,9 +213,16 @@ static HRESULT CreatePad(Pad& pad, EASYCONTROL_PIPE_RESPONSE& response)
     wchar_t instanceId[32];
     swprintf_s(instanceId, L"Pad%d", pad.slot);
 
+    // Windows.Gaming.Input takes the XUSB device for an Xbox pad with
+    // Microsoft's xinputhid filter on it; where Windows has no such filter
+    // (Windows Server), the device goes without it - XInput still reads it
+    const PCWSTR xusbHardwareIds = HasXinputHid()
+        ? EASYCONTROL_XUSB_HARDWARE_ID L"\0"
+        : EASYCONTROL_XUSB_PLAIN_HARDWARE_ID L"\0";
+
     // a device being removed may still hold the instance name for a moment
     for (int attempt = 0; attempt < 10; attempt++) {
-        hr = CreateDevice(EASYCONTROL_XUSB_ENUMERATOR, instanceId, EASYCONTROL_XUSB_HARDWARE_ID L"\0",
+        hr = CreateDevice(EASYCONTROL_XUSB_ENUMERATOR, instanceId, xusbHardwareIds,
             L"easy-control Virtual Gamepad (XInput)", containerId, &pad.xusb, response.XusbInstanceId);
         if (SUCCEEDED(hr)) {
             hr = CreateDevice(EASYCONTROL_HID_ENUMERATOR, instanceId, EASYCONTROL_HID_HARDWARE_ID L"\0",
@@ -401,7 +420,8 @@ static VOID WINAPI ServiceMain(DWORD argc, LPWSTR* argv)
         return;
     }
     ReportStatus(SERVICE_RUNNING);
-    Log(L"started, version %d", EASYCONTROL_PAD_VERSION);
+    Log(L"started, version %d%s", EASYCONTROL_PAD_VERSION,
+        HasXinputHid() ? L"" : L"; no xinputhid.sys here: XInput only, not Windows.Gaming.Input");
     RunPipeServer();
     // pads still plugged in go when the process ends, as their handles close
     ReportStatus(SERVICE_STOPPED);

@@ -28,6 +28,9 @@ easycontrol_gamepad.dll = 1
 
 [EasyControl.NT$ARCH$.10.0...18362]
 %XusbDesc% = XusbPad_Install, EasyControl\VID_045E&PID_028E&XI_00
+; where Windows has no xinputhid.sys (Windows Server), the service makes the
+; device with this ID instead: the same driver, without the filter
+%XusbDesc% = XusbPadPlain_Install, EasyControl\XusbPad
 
 [UMDriverCopy]
 easycontrol_gamepad.dll
@@ -55,6 +58,31 @@ Include = WUDFRD.inf
 Needs   = WUDFRD.NT.Services
 
 [XusbPad_Install.NT.Wdf]
+UmdfService              = EasyControlGamepad, EasyControlGamepad_Install
+UmdfServiceOrder         = EasyControlGamepad
+UmdfHostProcessSharing   = ProcessSharingDisabled
+
+;
+; the same without the xinputhid filter
+;
+[XusbPadPlain_Install.NT]
+CopyFiles = UMDriverCopy
+Include   = WUDFRD.inf
+Needs     = WUDFRD.NT
+
+[XusbPadPlain_Install.NT.hw]
+Include = WUDFRD.inf
+Needs   = WUDFRD.NT.hw
+AddReg  = XusbPadPlain_AddReg
+
+[XusbPadPlain_AddReg]
+HKR,,Security,,"D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;WD)"
+
+[XusbPadPlain_Install.NT.Services]
+Include = WUDFRD.inf
+Needs   = WUDFRD.NT.Services
+
+[XusbPadPlain_Install.NT.Wdf]
 UmdfService              = EasyControlGamepad, EasyControlGamepad_Install
 UmdfServiceOrder         = EasyControlGamepad
 UmdfHostProcessSharing   = ProcessSharingDisabled

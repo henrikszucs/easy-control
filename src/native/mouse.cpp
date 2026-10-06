@@ -234,6 +234,9 @@ static void MoveTo(Napi::Env env, double x, double y) {
         CGEventSetFlags(moveEvent, ModifierFlags());
         CGEventPost(kCGHIDEventTap, moveEvent);
         CFRelease(moveEvent);
+        // the posted event moves the pointer a moment later; warping it there
+        // as well makes getX/getY right after read the new position
+        CGWarpMouseCursorPosition(CGPointMake(x, y));
 
     #elif defined(IS_LINUX)
         if (IsWaylandSession()) {

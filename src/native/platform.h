@@ -65,8 +65,15 @@
 
     // One event source for every synthesized event, sharing the HID system's
     // state, so the events look like they come from the same device.
+    // The pointer warps easy-control makes do not hold back the real mouse.
     inline CGEventSourceRef EventSource() {
-        static CGEventSourceRef source = CGEventSourceCreate(kCGEventSourceStateHIDSystemState);
+        static CGEventSourceRef source = [] {
+            CGEventSourceRef created = CGEventSourceCreate(kCGEventSourceStateHIDSystemState);
+            if (created != NULL) {
+                CGEventSourceSetLocalEventsSuppressionInterval(created, 0.0);
+            }
+            return created;
+        }();
         return source;
     }
 

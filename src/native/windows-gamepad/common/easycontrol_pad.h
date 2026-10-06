@@ -34,6 +34,9 @@ static const GUID EASYCONTROL_GUID_DEVINTERFACE_XUSB =
 // and XI_00 in its hardware ID, as on the companion devices of HIDMaestro
 #define EASYCONTROL_XUSB_ENUMERATOR L"EasyControl"
 #define EASYCONTROL_XUSB_HARDWARE_ID L"EasyControl\\VID_045E&PID_028E&XI_00"
+// the same device without Microsoft's xinputhid filter, for Windows editions
+// that lack it (Windows Server): XInput reads it, Windows.Gaming.Input not
+#define EASYCONTROL_XUSB_PLAIN_HARDWARE_ID L"EasyControl\\XusbPad"
 // "IG_" in the enumerator name puts it into the HID collection's device path
 // (\\?\HID#EasyControl_IG_00#...), as Windows' own "XINPUT compatible HID
 // device" has; Chromium, SDL and the DirectInput IsXInputDevice check skip

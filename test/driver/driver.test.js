@@ -44,7 +44,7 @@ const serviceExists = function(name) {
 
 // every device node of ours Windows knows, plugged in or remembered
 const deviceNodes = function() {
-    const ids = powershell("Get-PnpDevice -ErrorAction SilentlyContinue | Where-Object { $_.InstanceId -like 'SWD\\EASYCONTROL*' } | " +
+    const ids = powershell("Get-PnpDevice -ErrorAction SilentlyContinue | Where-Object { $_.InstanceId -like 'SWD\\EASYCONTROL*' -or $_.InstanceId -like 'HID\\EASYCONTROL*' } | " +
         "ForEach-Object { $_.InstanceId }");
     return ids ? ids.split(/\r?\n/) : [];
 };
@@ -108,7 +108,10 @@ test("uninstallDriver removes the driver, its service, certificate, files and de
         assert.equal(fs.existsSync(path.join(path.dirname(LOG_FILE), log)), false, log + " is removed");
     }
     // Windows' own filter driver stays
-    assert.equal(serviceExists("xinputhid"), true, "xinputhid is left in place");
+    // (Windows Server editions have none to leave)
+    if (fs.existsSync(path.join(process.env["windir"] || "C:\\Windows", "System32", "drivers", "xinputhid.sys"))) {
+        assert.equal(serviceExists("xinputhid"), true, "xinputhid is left in place");
+    }
 
     await assert.rejects(Gamepad.create(), { "code": "EASYCONTROL_DRIVER_MISSING" });
 });

@@ -141,7 +141,11 @@ function Install-Gamepad {
     # the XUSB device has Microsoft's xinputhid filter on it, whose service
     # Windows registers only once an Xbox controller has been plugged in;
     # it is Windows' own, so uninstall leaves it
-    if (-not (Get-Service -Name "xinputhid" -ErrorAction SilentlyContinue)) {
+    # Windows Server editions lack the filter altogether: the service then
+    # makes the XUSB device without it (XInput only)
+    if (-not (Test-Path (Join-Path $env:windir "System32\drivers\xinputhid.sys"))) {
+        Write-Log "No xinputhid.sys here: the gamepad works with XInput, Windows.Gaming.Input will not see it"
+    } elseif (-not (Get-Service -Name "xinputhid" -ErrorAction SilentlyContinue)) {
         Invoke-Tool (Join-Path $env:windir "System32\sc.exe") @("create", "xinputhid", "type=", "kernel", "start=", "demand",
             "binPath=", "System32\drivers\xinputhid.sys", "DisplayName=", "XINPUT HID Filter Driver") | Out-Null
         Write-Log "Registered the xinputhid service"
@@ -186,7 +190,10 @@ function Uninstall-Gamepad([switch]$Quiet) {
 
     # the devices Windows still remembers, then the driver package
     $pnputil = Join-Path $env:windir "System32\pnputil.exe"
-    Get-PnpDevice -ErrorAction SilentlyContinue | Where-Object { $_.InstanceId -like "SWD\EASYCONTROL*" } | ForEach-Object {
+    # the pads' devices and the HID collections Windows made as their children
+    Get-PnpDevice -ErrorAction SilentlyContinue | Where-Object {
+        $_.InstanceId -like "SWD\EASYCONTROL*" -or $_.InstanceId -like "HID\EASYCONTROL*"
+    } | ForEach-Object {
         & $pnputil /remove-device $_.InstanceId | Out-Null
     }
     foreach ($inf in @(Get-InstalledInfs)) {

@@ -944,7 +944,8 @@ Napi::Boolean Keyboard::isKeySupported(const Napi::CallbackInfo& info) {
         return Napi::Boolean::New(env, false);
     }
     auto it = SpecialKeys.find(key);
-    return Napi::Boolean::New(env, it != SpecialKeys.end() && it->second != 0);
+    // 0 is a key too: macOS's A key (kVK_ANSI_A)
+    return Napi::Boolean::New(env, it != SpecialKeys.end());
 }
 
 void Keyboard::type(const Napi::CallbackInfo& info) {
