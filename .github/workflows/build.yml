@@ -90,6 +90,8 @@ jobs:
         with:
           name: win32-arm64
           path: dist/win32-arm64
+      # the loaders of these sources, not the ones last committed to dist/
+      - run: npm run build:js
       - name: Test
         run: |
           set -o pipefail
