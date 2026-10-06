@@ -102,6 +102,13 @@ function Install-Gamepad {
     }
     Copy-Item (Join-Path $Here "easy-control-gamepad-service.exe") $InstallDir -Force
 
+    # the logs' folder: the service (as SYSTEM) and administrators write it,
+    # users may read it
+    $logDir = Split-Path $LogFile
+    New-Item -ItemType Directory -Force $logDir | Out-Null
+    Invoke-Tool (Join-Path $env:windir "System32\icacls.exe") @($logDir, "/inheritance:r",
+        "/grant:r", "*S-1-5-18:(OI)(CI)F", "*S-1-5-32-544:(OI)(CI)F", "*S-1-5-32-545:(OI)(CI)RX") | Out-Null
+
     # 2. certificate: code signing only, not a CA, its key never leaves this machine
     $cert = New-SelfSignedCertificate -Type CodeSigningCert `
         -Subject "$CertSubject ($env:COMPUTERNAME)" `
@@ -197,6 +204,10 @@ function Uninstall-Gamepad([switch]$Quiet) {
     }
     if (Test-Path $RegistryKey) {
         Remove-Item $RegistryKey -Recurse -Force
+    }
+    # the service's logs; the setup log stays, it tells of this too
+    foreach ($log in @("gamepad-service.log", "gamepad-service.log.old")) {
+        Remove-Item (Join-Path (Split-Path $LogFile) $log) -Force -ErrorAction SilentlyContinue
     }
     if (-not $Quiet) {
         Write-Log "Removed"

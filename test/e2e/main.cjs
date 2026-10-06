@@ -183,19 +183,21 @@ test("Screen.list matches Electron's screen API", function() {
     const displays = screen.getAllDisplays();
     const primaryId = screen.getPrimaryDisplay().id;
     assert(ours.length === displays.length, "screen count: " + ours.length + " vs Electron " + displays.length);
-    // a size that does not divide by the scale (1024 px / 1.25 = 819.2) is
-    // rounded out by Electron (820) and down by easy-control (819), so the
-    // two may differ by one logical pixel
-    const isSame = function(a, b) {
-        return Math.abs(a - b) <= 1;
-    };
+    // the same rectangles to the pixel, a size that does not divide by the
+    // scale (1024 px / 1.25 = 819.2) included
     for (const display of displays) {
         const b = display.bounds;
         const match = ours.find(function(s) {
-            return isSame(s["x"], b.x) && isSame(s["y"], b.y) && isSame(s["width"], b.width) && isSame(s["height"], b.height);
+            return s["x"] === b.x && s["y"] === b.y && s["width"] === b.width && s["height"] === b.height;
         });
         assert(match, "no screen at " + JSON.stringify(b) + " in " + JSON.stringify(ours));
         assert(match["isPrimary"] === (display.id === primaryId), "isPrimary of screen at " + b.x + "," + b.y);
+        assert(typeof match["id"] === "string" && match["id"].length > 0, "screen id " + JSON.stringify(match["id"]));
+        assert(typeof match["name"] === "string", "screen name " + JSON.stringify(match["name"]));
+        // macOS: the id is the CGDirectDisplayID, which Electron uses as display.id
+        if (os.platform() === "darwin") {
+            assert(match["id"] === String(display.id), "id " + match["id"] + " vs Electron's " + display.id);
+        }
         // X11 reports pixels with scaleFactor 1, Electron its own UI scale
         if (os.platform() !== "linux") {
             assert(match["scaleFactor"] === display.scaleFactor, "scaleFactor " + match["scaleFactor"] + " vs Electron " + display.scaleFactor);
@@ -326,6 +328,9 @@ test("scrolling sends wheel events in the right direction", async function() {
     const left = await scroll(Mouse.scrollUp, 1, true);
     assert(left.deltaX < 0, "horizontal scrollUp: deltaX " + left.deltaX + " should be negative (left)");
 
+    const negative = await scroll(Mouse.scrollDown, -1, false);
+    assert(negative.deltaY < 0, "scrollDown(-1): deltaY " + negative.deltaY + " should be negative (up)");
+
     const three = await scroll(Mouse.scrollDown, 3, false);
     assert(three.deltaY > down.deltaY, "3 notches (" + three.deltaY + ") should scroll further than 1 (" + down.deltaY + ")");
 });
@@ -444,6 +449,41 @@ test("a held modifier applies to the next key", async function() {
     }
 });
 
+test("Keyboard.releaseAll releases a key still held down", async function() {
+    await call("blurText()");
+    await requireFocus();
+    const mark = events.length;
+    Keyboard.keyDown("KeyJ");
+    await waitFor(mark, "KeyJ keydown", function(e) {
+        return e["type"] === "keydown" && e["code"] === "KeyJ";
+    });
+    Keyboard.releaseAll();
+    await waitFor(mark, "KeyJ keyup from releaseAll", function(e) {
+        return e["type"] === "keyup" && e["code"] === "KeyJ";
+    });
+    // nothing left to release
+    const after = events.length;
+    Keyboard.releaseAll();
+    await sleep(150);
+    assert(!events.slice(after).some(function(e) {
+        return e["type"] === "keyup";
+    }), "a second releaseAll released something again");
+});
+
+test("Mouse.releaseAll releases a button still held down", async function() {
+    const point = centre(regions.pad);
+    const mark = events.length;
+    Mouse.setPosition(point.x, point.y);
+    Mouse.buttonDown("left");
+    await waitFor(mark, "mousedown", function(e) {
+        return e["type"] === "mousedown" && e["button"] === 0;
+    });
+    Mouse.releaseAll();
+    await waitFor(mark, "mouseup from releaseAll", function(e) {
+        return e["type"] === "mouseup" && e["button"] === 0;
+    });
+});
+
 test("type enters text regardless of the keyboard layout", async function() {
     // Wayland types only what the current layout has keys for
     const sample = isWayland ? "Hello World 123" : "Hello, World! 123 ő€ß 日本 😀";
@@ -467,12 +507,15 @@ test("type enters text regardless of the keyboard layout", async function() {
 //
 // Gamepad
 //
+// set by probeGamepad() before the tests run
 let gamepadReason = "";
-try {
-    Gamepad.create().destroy();
-} catch (error) {
-    gamepadReason = "no virtual gamepad: " + error.message;
-}
+const probeGamepad = async function() {
+    try {
+        (await Gamepad.create()).destroy();
+    } catch (error) {
+        gamepadReason = "no virtual gamepad: " + error.message;
+    }
+};
 
 // the pad Chromium shows for our virtual one, found by the index it took
 const findPad = async function(before, gamepad) {
@@ -515,11 +558,11 @@ const waitForPad = async function(index, description, predicate) {
     throw new Error("Gamepad never showed " + description + "; last state " + JSON.stringify(pad && { "buttons": pad.buttons.map((b) => b.value), "axes": pad.axes }));
 };
 
-test("a virtual gamepad shows up in navigator.getGamepads with every button and axis", { "skip": gamepadReason }, async function() {
+test("a virtual gamepad shows up in navigator.getGamepads with every button and axis", { "skip": function() { return gamepadReason; } }, async function() {
     const before = (await call("readGamepads()")).map(function(p) {
         return p["index"];
     });
-    const gamepad = Gamepad.create();
+    const gamepad = await Gamepad.create();
     try {
         const index = await findPad(before, gamepad);
         const pad = await readPad(index);
@@ -620,6 +663,7 @@ const main = async function() {
         (isWayland ? ", Wayland" : "") + "\n");
     let failed = 1;
     try {
+        await probeGamepad();
         failed = await runTests();
     } finally {
         releaseAll();

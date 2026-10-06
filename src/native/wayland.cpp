@@ -148,6 +148,9 @@ struct Output {
     int logicalY = 0;
     int logicalWidth = 0;
     int logicalHeight = 0;
+    std::string name;           // wl_output v4 or xdg_output v2: "HDMI-A-1"
+    std::string description;    // "Dell Inc. DELL U2720Q (HDMI-A-1)"
+    std::string model;          // from the geometry: "DELL U2720Q"
 };
 
 // One connection kept open, so a call only has to catch up on what changed.
@@ -163,11 +166,12 @@ std::mutex connectionMutex;
 Connection connection;
 
 // wl_output events
-void OnGeometry(void* data, void*, int32_t x, int32_t y, int32_t, int32_t, int32_t, const char*, const char*, int32_t transform) {
+void OnGeometry(void* data, void*, int32_t x, int32_t y, int32_t, int32_t, int32_t, const char*, const char* model, int32_t transform) {
     Output* output = static_cast<Output*>(data);
     output->x = x;
     output->y = y;
     output->transform = transform;
+    output->model = model != nullptr ? model : "";
 }
 void OnMode(void* data, void*, uint32_t flags, int32_t width, int32_t height, int32_t) {
     if (flags & 0x1) {      // WL_OUTPUT_MODE_CURRENT
@@ -180,8 +184,12 @@ void OnOutputDone(void*, void*) {}
 void OnScale(void* data, void*, int32_t factor) {
     static_cast<Output*>(data)->scale = factor > 0 ? factor : 1;
 }
-void OnOutputName(void*, void*, const char*) {}
-void OnOutputDescription(void*, void*, const char*) {}
+void OnOutputName(void* data, void*, const char* name) {
+    static_cast<Output*>(data)->name = name != nullptr ? name : "";
+}
+void OnOutputDescription(void* data, void*, const char* description) {
+    static_cast<Output*>(data)->description = description != nullptr ? description : "";
+}
 Handler outputListener[] = {
     (Handler)OnGeometry,
     (Handler)OnMode,
@@ -204,8 +212,19 @@ void OnLogicalSize(void* data, void*, int32_t width, int32_t height) {
     output->logicalHeight = height;
 }
 void OnXdgDone(void*, void*) {}
-void OnXdgName(void*, void*, const char*) {}
-void OnXdgDescription(void*, void*, const char*) {}
+// the same as wl_output v4 tells; kept when that told it already
+void OnXdgName(void* data, void*, const char* name) {
+    Output* output = static_cast<Output*>(data);
+    if (output->name.empty() && name != nullptr) {
+        output->name = name;
+    }
+}
+void OnXdgDescription(void* data, void*, const char* description) {
+    Output* output = static_cast<Output*>(data);
+    if (output->description.empty() && description != nullptr) {
+        output->description = description;
+    }
+}
 Handler xdgOutputListener[] = {
     (Handler)OnLogicalPosition,
     (Handler)OnLogicalSize,
@@ -359,6 +378,10 @@ bool ListWaylandOutputs(std::vector<WaylandOutput>& outputs) {
         }
         result.scaleFactor = result.width > 0 ? (double)pixelWidth / result.width : 1.0;
         result.isPrimary = false;
+        // an old compositor names no output: the global number still tells them apart
+        result.id = !output->name.empty() ? output->name : "wl_output-" + std::to_string(output->globalName);
+        const bool hasModel = !output->model.empty() && output->model != "unknown";
+        result.name = hasModel ? output->model : output->description;
         outputs.push_back(result);
     }
 

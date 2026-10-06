@@ -45,6 +45,16 @@ await Promise.all(outputs.map(function([file, format]) {
     return buildScript(file, format);
 }));
 
+// the type definitions: the same for require, plus the default export for
+// import (a CommonJS module has none)
+const types = banner + "\n" + await fs.readFile(path.join(conf["srcDir"], "easy-control.d.ts"), "utf8");
+await fs.writeFile(path.join(conf["outDir"], "easy-control.d.cts"), types);
+await fs.writeFile(path.join(conf["outDir"], "easy-control.d.mts"), types +
+    "\ndeclare const easyControl: {\n" +
+    "    Mouse: Mouse;\n    Keyboard: Keyboard;\n    Gamepad: Gamepad;\n    Screen: Screen;\n    Platform: Platform;\n" +
+    "};\nexport default easyControl;\n");
+outputs.push(["easy-control.d.cts"], ["easy-control.d.mts"]);
+
 for (const [file] of outputs) {
     const code = await fs.readFile(path.join(conf["outDir"], file));
     const size = (code.byteLength / 1024).toFixed(2);

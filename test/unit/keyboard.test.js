@@ -80,3 +80,14 @@ test("SetLayout to the current layout keeps it", { "skip": isWayland && "SetLayo
 test("SetLayout throws on Wayland", { "skip": !isWayland && "not a Wayland session" }, function() {
     assert.throws(function() { Keyboard.SetLayout(Keyboard.GetLayout()); }, { "message": /not supported on Wayland/ });
 });
+
+test("releaseAll with no key down does nothing and throws nothing", function() {
+    assert.equal(Keyboard.releaseAll(), undefined);
+    assert.equal(Keyboard.releaseAll(), undefined);
+});
+
+test("a key that failed to go down is not released later", function() {
+    assert.throws(function() { Keyboard.keyDown("NotAKey"); }, { "message": "Key not supported" });
+    // releaseAll would throw if it tried to release the unsupported key
+    assert.equal(Keyboard.releaseAll(), undefined);
+});

@@ -6,13 +6,10 @@ Simple and easy to use node.js module to simulate mouse, keyboard and gamepad in
 ## Usage
 
 ```js
-// Module import
-import { Mouse, Keyboard,  Gamepad, Screen } from "./dist/easy-control.mjs";
-// CommonJS import
-const { Mouse, Keyboard,  Gamepad, Screen } = require("./dist/easy-control.cjs");
-// Electron import example (need OS absolute route to .node file)
-const absolutePath = "/tmp/dist/easy-control.node"
-const { Mouse, Keyboard, Gamepad, Screen } = require(absolutePath);
+// ES module
+import { Mouse, Keyboard, Gamepad, Screen, Platform } from "easy-control";
+// CommonJS
+const { Mouse, Keyboard, Gamepad, Screen, Platform } = require("easy-control");
 
 /*
     !!! Function calculate with X and Y positions logical scaled value (not the native resolution)!!!
@@ -32,6 +29,42 @@ Note:
 */
 ```
 
+TypeScript definitions come with the package, for both.
+
+### Platform
+```js
+Platform.target;            // "win32-x64": this process's platform and CPU
+Platform.supportedTargets;  // ["darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64", "win32-arm64", "win32-x64"]
+Platform.isSupported;       // the build for this target is there and loaded
+Platform.loadError;         // why not, when isSupported is false; null otherwise
+
+// Importing never throws: where isSupported is false, every other function throws (or, if it returns a
+// Promise, rejects) an Error with code "EASYCONTROL_UNSUPPORTED_PLATFORM" and Platform.loadError as message.
+
+Platform.hasInputAccess();  // whether input sent now reaches applications: on macOS the app needs the
+                            // Accessibility permission, on Wayland /dev/uinput must be writable; true on Windows
+await Platform.requestInputAccess();
+// macOS: shows the system prompt pointing to System Settings > Privacy & Security > Accessibility, and
+// resolves with the access there is now - false until the user allows it, so check hasInputAccess() again
+// later. Elsewhere it resolves with hasInputAccess() at once.
+```
+
+Keys and mouse buttons pressed through easy-control and still down when the process ends are released (on exit,
+and on SIGINT and SIGTERM when the app does not handle those itself), so a closing app leaves none stuck.
+
+### Electron
+
+Use it in the main process (or a preload or renderer with Node integration) like any other dependency. Native files
+cannot be loaded from inside an asar archive, so when packaging, unpack the addon and the Windows gamepad driver
+files, which the driver setup must find as real files:
+
+```json
+"asarUnpack": ["**/node_modules/easy-control/dist/*/*.node", "**/node_modules/easy-control/dist/*/gamepad/**"]
+```
+
+(electron-builder; Electron Forge's `@electron-forge/plugin-auto-unpack-natives` covers the `.node` files, add the
+`gamepad` folder to its `unpack` option.)
+
 ### Mouse
 ```js
 const x = Mouse.getX();
@@ -39,13 +72,17 @@ const y = Mouse.getY();
 
 const icon = Mouse.getIcon();
 /*
+The same format on every platform:
 {
-    "width": 32,        // icon width
-    "height": 32,       // icon height
-    "data": Uint8Array, // image in rgba data, row by row from the top (width * height * 4 bytes)
-    "xOffset": 0,       // pointer X offset from icon
-    "yOffset": 0        // pointer Y offset from icon
+    "width": 32,        // in physical pixels (on a Retina Mac, 2 per point)
+    "height": 32,
+    "data": Uint8Array, // RGBA, row by row from the top (width * height * 4 bytes), straight (not
+                        // premultiplied) alpha; fully transparent pixels are black
+    "xOffset": 0,       // the hot spot (the pixel that points), in physical pixels
+    "yOffset": 0
 }
+While the pointer is hidden: width and height 0, data empty. Windows draws the inverting pixels of black-and-
+white cursors (the text I-beam) by the screen under them; here they are mid-grey.
 */
 
 const iconId = Mouse.getIconId();   // a number that changes when the pointer shape changes, 0 while it is hidden.
@@ -58,24 +95,49 @@ Mouse.setY(y);
 
 Mouse.buttonDown(btn);  // "right" | "middle" | "left" | "back" | "forward"
 Mouse.buttonUp(btn);    // "right" | "middle" | "left" | "back" | "forward"
+Mouse.releaseAll();     // releases every button buttonDown pressed and buttonUp did not release yet
 
-Mouse.scrollDown(amount=1, isHorizontal=false); // down or right scroll
-Mouse.scrollUp(amount=1, isHorizontal=false);   // up or left scroll
+Mouse.scrollDown(amount, isHorizontal);    // down, or right when isHorizontal is true
+Mouse.scrollUp(amount, isHorizontal);      // up, or left when isHorizontal is true
+// Both arguments are required. amount is in wheel notches; a fraction is dropped, a negative amount scrolls
+// the other way, 0 does nothing. Pixel deltas (e.g. from a browser's wheel event) can be added up in JS and
+// sent a notch at a time.
 ```
 
 ### Keyboard
 ```js
 
-const isKeySupported = Keyboard.isKeySupported(key=""); // check if special key is supported.
+// a physical key, named by its KeyboardEvent "code" value ("KeyA", "ShiftLeft", "Numpad5", ...):
+// https://developer.mozilla.org/en-US/docs/Web/API/UI_Events/Keyboard_event_code_values
+const isKeySupported = Keyboard.isKeySupported(code);  // true when this platform can press that key
 
-Keyboard.keyDown(key="");   // key value is a KeyboardEvent "code" property string (https://developer.mozilla.org/en-US/docs/Web/API/UI_Events/Keyboard_event_code_values)
-Keyboard.keyUp(key="");
+Keyboard.keyDown(code);
+Keyboard.keyUp(code);
+Keyboard.releaseAll();      // releases every key keyDown pressed and keyUp did not release yet,
+                            // e.g. when the remote side of a session is gone
+// keyDown/keyUp press a key by its place on the keyboard (its scan code), the same key whatever the layout;
+// the layout only decides which character that key makes. "KeyY" is the key right of "KeyT": it types "y"
+// on a US layout and "z" on a German or Hungarian one.
 
-Keyboard.type(char="");     // Character to type. "keyDown" with "keyUp" methods does with physical keyboard keys but if you want input layout dependent characters like ő,ú,ű on english keyboard, use this.
+Keyboard.type(text);
+// Enters text as it is, whatever the layout: "ő€日本😀" types the same on every layout. Use it for text,
+// keyDown/keyUp for keys and shortcuts.
+// Linux types each character with the key that makes it on the current layout, Shift and AltGr included
+// (on a Hungarian layout "@" is AltGr+V). A character the layout has no key for is put on a spare key on X11;
+// on Wayland it is skipped and the call throws naming it, once the rest is typed, unless:
+Keyboard.type(text, { "unicodeFallback": true });
+// enters those characters with Ctrl+Shift+U and their code point, which GTK and IBus applications
+// understand - other applications get stray characters or shortcuts, hence it is off by default.
 
-const layout = Keyboard.GetLayout();    // Get the current layout settings in string
-Keyboard.SetLayout(layout="");  // Set the keyboard language setting, this affect keyDown, keyUp characters, Windows:https://learn.microsoft.com/en-us/windows-hardware/manufacture/desktop/windows-language-pack-default-values?view=windows-11
-
+const layout = Keyboard.GetLayout();
+Keyboard.SetLayout(layout);
+// The current keyboard layout, as the platform names it:
+//   Windows: the layout ID (KLID) of the window the input goes to, e.g. "00000409" (US), "0000040E" (Hungarian),
+//            see https://learn.microsoft.com/windows-hardware/manufacture/desktop/windows-language-pack-default-values
+//   macOS:   the input source ID, e.g. "com.apple.keylayout.US"
+//   Linux:   the XKB group name, e.g. "English (US)"; SetLayout throws on Wayland
+// SetLayout switches it: on Windows for the window the input goes to, on macOS the input source, on X11 the XKB
+// group. It changes what characters keys make, so what keyDown/keyUp type - not which keys they press.
 
 ```
 
@@ -120,8 +182,10 @@ echo "uinput" | sudo tee -a /etc/modules
 
 const gamepads = Gamepad.list(); // return gamepad objects in array
 
-const gamepad1 = Gamepad.create();  // throws an Error saying why when no virtual gamepad can be made
-                                    // (driver missing, no permission, ...)
+const gamepad1 = await Gamepad.create();    // a Promise: plugging a gamepad in takes a moment (on Windows
+                                            // the service starts and the devices come up). It rejects
+                                            // with an Error saying why it cannot (driver missing, no
+                                            // permission, ...), with a code, see below
 gamepad1.isActive();
 
 gamepad1.buttonDown(btn=0);
@@ -186,11 +250,11 @@ An application can offer the install when it is missing:
 ```js
 let gamepad;
 try {
-    gamepad = Gamepad.create();
+    gamepad = await Gamepad.create();
 } catch (error) {
     if (error.code === "EASYCONTROL_DRIVER_MISSING" || error.code === "EASYCONTROL_DRIVER_OUTDATED") {
         await Gamepad.installDriver();  // rejects with code EASYCONTROL_SETUP_CANCELLED if UAC is declined
-        gamepad = Gamepad.create();
+        gamepad = await Gamepad.create();
     } else {
         throw error;
     }
@@ -204,7 +268,11 @@ nothing else; then it installs the driver package and the service. No test-signi
 because the driver runs in user mode. Its log is `%ProgramData%\easy-control\gamepad-setup.log`; the script can also
 be run by hand (`install`, `uninstall`, `status`). `uninstallDriver()` removes all of it, the certificate included.
 
-`Gamepad.create()` throws an Error with one of these `code`s: `EASYCONTROL_DRIVER_MISSING`,
+The service logs the pads it plugs in and out, and failures with their reason, to
+`%ProgramData%easy-controlgamepad-service.log` (at most 256 KB, the one before as `.log.old`); it starts when an
+application asks for a gamepad and stops itself after a minute with none.
+
+`Gamepad.create()` rejects with an Error with one of these `code`s: `EASYCONTROL_DRIVER_MISSING`,
 `EASYCONTROL_DRIVER_OUTDATED`, `EASYCONTROL_NO_SLOT` (4 gamepads already), `EASYCONTROL_SERVICE_FAILED`,
 `EASYCONTROL_CREATE_FAILED`.
 
@@ -215,6 +283,8 @@ const screens = Screen.list();
 /*
 [
     {
+        "id": "\\.\DISPLAY1",    // stable while the screen stays connected, see below
+        "name": "DELL U2720Q",      // the monitor's name for people, "" when the system has none
         "isPrimary": true,
         "width": 1536,
         "height": 864,
@@ -223,6 +293,8 @@ const screens = Screen.list();
         "scaleFactor": 1.25
     },
     {
+        "id": "\\.\DISPLAY2",
+        "name": "SyncMaster",
         "isPrimary": false,
         "width": 1680,
         "height": 900,
@@ -231,6 +303,11 @@ const screens = Screen.list();
         "scaleFactor": 1
     }
 ]
+
+id: Windows the GDI device name ("\.DISPLAY1"), macOS the CGDirectDisplayID ("69733248"), Linux the output name
+("HDMI-1"). On macOS it equals Electron's display.id; elsewhere match a screen to Electron's displays or to a
+desktopCapturer source by their bounds, which are the same to the pixel on Windows (screens are rounded and laid out
+as Electron does).
 */
 ```
 
@@ -261,15 +338,47 @@ and other wlroots compositors, ...).
 
 `EASY_CONTROL_BACKEND=x11` or `EASY_CONTROL_BACKEND=wayland` in the environment overrides the detection.
 
+## Limits
+
+What the operating systems do not let a program do, or do only in part.
+
+### Windows
+- **Elevated windows**: input does not reach a window of a process running as administrator unless the process
+  sending it runs as administrator too (User Interface Privilege Isolation). It is dropped without an error.
+- **The secure desktop**: nothing reaches UAC prompts, the lock and sign-in screens, or Ctrl+Alt+Del. A user
+  controlling a machine remotely cannot approve a UAC prompt - `Gamepad.installDriver()`'s included - so install
+  the driver while someone is at the machine.
+- **Raw Input**: `Mouse.setPosition`/`setX`/`setY` move the pointer, which applications reading Raw Input do not see
+  as mouse movement: many games and pointer-locked web pages. Clicks, scrolling and keys do reach them.
+- **`Keyboard.type`** sends the characters as Unicode packets, which some games and remote-desktop clients ignore;
+  `keyDown`/`keyUp` reach them.
+- **Gamepads**: at most 4 (XInput's limit); kernel-level anti-cheat may refuse virtual ones.
+
+### macOS
+- Input needs the **Accessibility** permission (System Settings > Privacy & Security > Accessibility) for the app
+  that runs easy-control - the terminal for `node`, the app itself for Electron. Without it macOS drops every event,
+  without an error.
+- The virtual gamepad needs macOS 26 and an app signed with the `com.apple.developer.hid.virtual.device` entitlement.
+
+### Linux
+- X11 coordinates are pixels; there is no logical (scaled) coordinate space.
+- Wayland: see "Linux: X11 and Wayland" above.
+
 ## Testing
 
 The tests use the built `dist/`, so build first.
 
 ```
 npm test              # unit tests (node:test), test/unit/
+npm run test:types    # the TypeScript definitions against test/types/ (tsc)
+npm run test:native   # C++ tests of code without system calls, test/native/ (the Windows screen layout)
 npm run test:e2e      # end-to-end tests in an Electron window, test/e2e/
 npm run test:driver   # Windows: uninstalls and reinstalls the gamepad driver, test/driver/
 ```
+
+On Linux, `test/unit/typing-x11.test.js` types into a window of its own with a Hungarian layout, to check characters
+that need AltGr; as it types for real, it runs only with `EASYCONTROL_TYPING_TEST=1` (CI sets it under Xvfb).
+CI (`.github/workflows/build.yml`) builds every target and runs these on Windows, macOS and Linux.
 
 `npm test` checks the loaders, every function's results and argument checks, and the gamepad lifecycle. It moves the
 pointer and puts it back, but never clicks, scrolls or presses keys.
@@ -294,7 +403,7 @@ npm install
 npm run build
 ```
 
-`npm install` brings `node-gyp`, `node-addon-api` and `esbuild` in as dev dependencies, so none has to be installed globally.
+`npm install` brings `node-gyp`, `node-addon-api` and `esbuild` in as dev dependencies, so none has to be installed globally. Building needs Node `^22.22.2`, `^24.15.0` or `>=26` (what node-gyp 13 runs on); using the built package needs Node 22 or later, or Electron 21 or later (it brings its own Node).
 
 `npm run build` compiles the addon for the running platform, then minifies the JS loaders (`src/easy-control.cjs`, `src/easy-control.mjs`) into `dist/` with esbuild. The native sources are in `src/native/`, the build script of the loaders is `src/build.js`. Another CPU is given with `--arch`; on Windows x64 this builds `dist/win32-arm64/easy-control.node` (needs Visual Studio's "MSVC ARM64 build tools"):
 
@@ -323,7 +432,8 @@ Only the results in `dist/` are committed; `build/` and `build_wdk/` hold interm
 
 ### Clean
 ```
-npm run clean
+npm run clean            # build/, build_swift/, tmp/
+npm run clean -- --all   # also node_modules/ and build_wdk/ (the WDK download cache)
 ```
 
 > [!CAUTION]

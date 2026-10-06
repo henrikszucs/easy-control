@@ -88,7 +88,7 @@ after(async function() {
 
 test("uninstallDriver removes the driver, its service, certificate, files and devices", { skip, "timeout": UAC_TIMEOUT }, async function() {
     // a pad plugged in while it goes
-    const gamepad = Gamepad.create();
+    const gamepad = await Gamepad.create();
     assert.equal(gamepad.isActive(), true);
     gamepad.destroy();
 
@@ -104,21 +104,62 @@ test("uninstallDriver removes the driver, its service, certificate, files and de
     assert.deepEqual(setup["certificates"], [], "no certificate left in any store");
     assert.equal(fs.existsSync(INSTALL_DIR), false, "Program Files folder is gone");
     assert.deepEqual(deviceNodes(), [], "Windows remembers no device of ours");
+    for (const log of ["gamepad-service.log", "gamepad-service.log.old"]) {
+        assert.equal(fs.existsSync(path.join(path.dirname(LOG_FILE), log)), false, log + " is removed");
+    }
     // Windows' own filter driver stays
     assert.equal(serviceExists("xinputhid"), true, "xinputhid is left in place");
 
-    assert.throws(function() { Gamepad.create(); }, { "code": "EASYCONTROL_DRIVER_MISSING" });
+    await assert.rejects(Gamepad.create(), { "code": "EASYCONTROL_DRIVER_MISSING" });
 });
 
 test("installDriver puts it back, and a gamepad works again", { skip, "timeout": UAC_TIMEOUT }, async function() {
     assert.equal(await Gamepad.installDriver(), undefined);
     assertInstalled();
 
-    const gamepad = Gamepad.create();
+    const gamepad = await Gamepad.create();
     try {
         assert.equal(gamepad.isActive(), true);
         gamepad.buttonDown(0);
         gamepad.setAxis(0, 0.5);
+    } finally {
+        gamepad.destroy();
+    }
+});
+
+const LOG_FILE = path.join(process.env["ProgramData"] || "C:\ProgramData", "easy-control", "gamepad-service.log");
+
+const serviceStatus = function() {
+    return powershell("(Get-Service -Name '" + SERVICE_NAME + "').Status.ToString()");
+};
+
+test("the service logs the pads it plugs in and out", { skip, "timeout": UAC_TIMEOUT }, async function() {
+    const gamepad = await Gamepad.create();
+    gamepad.destroy();
+    // the service writes the unplug once it sees the connection close
+    let log = "";
+    for (let i = 0; i < 50 && !/unplugged/.test(log); i++) {
+        await new Promise(function(resolve) { setTimeout(resolve, 100); });
+        log = fs.existsSync(LOG_FILE) ? fs.readFileSync(LOG_FILE, "utf8") : "";
+    }
+    assert.match(log, /started, version \d+/);
+    assert.match(log, /pad \d plugged in: SWD\\EasyControl\\Pad\d, SWD\\EasyControl_IG_00\\Pad\d/i);
+    assert.match(log, /pad \d unplugged/);
+});
+
+test("the service stops itself when idle and starts again on demand", { skip, "timeout": 3 * 60 * 1000 }, async function() {
+    assert.deepEqual(Gamepad.list(), [], "no pad of this process plugged in");
+    // it stops after 60 s without a client or a pad; checked every 5 s
+    const end = Date.now() + 90 * 1000;
+    while (serviceStatus() !== "Stopped" && Date.now() < end) {
+        await new Promise(function(resolve) { setTimeout(resolve, 2000); });
+    }
+    assert.equal(serviceStatus(), "Stopped", "the idle service stopped");
+
+    const gamepad = await Gamepad.create();
+    try {
+        assert.equal(gamepad.isActive(), true);
+        assert.equal(serviceStatus(), "Running", "create() started it again");
     } finally {
         gamepad.destroy();
     }

@@ -1,6 +1,13 @@
 {
     "targets": [{
         "target_name": "easy-control",
+        "variables": {
+            "conditions": [
+                # the Swift compiler names the CPU as its target triple does, so
+                # npm run build -- --arch x64 also cross-builds the Swift part
+                ["target_arch=='x64'", { "swift_arch": "x86_64" }, { "swift_arch": "arm64" }]
+            ]
+        },
         "conditions": [
             [
                 "OS=='win'",
@@ -18,6 +25,7 @@
                         "src/native/gamepad.cpp",
                         "src/native/gamepad_win.cpp",
                         "src/native/screen.cpp",
+                        "src/native/access.cpp",
                     ],
                     "include_dirs": [
                         "<!@(node -p \"require('node-addon-api').include\")"
@@ -51,7 +59,8 @@
                                 "-parse-as-library",
                                 "-emit-objc-header-path", "./build_swift/gamepad_implement-Swift.h",
                                 "-emit-library", "-static", "-o", "./build_swift/libGamepadImplement.a",
-                                "-module-name", "gamepad_implement"
+                                "-module-name", "gamepad_implement",
+                                "-target", "<(swift_arch)-apple-macos10.15"
                             ]
                         }
                     ],
@@ -61,6 +70,7 @@
                         "src/native/keyboard.cpp",
                         "src/native/gamepad.cpp",
                         "src/native/screen.cpp",
+                        "src/native/access.cpp",
                         "src/native/GamepadBridge.m"
                     ],
                     "include_dirs": [
@@ -86,6 +96,7 @@
                             "-L<!(xcrun --show-sdk-path)/usr/lib/swift",
                             "-Wl,-rpath,/usr/lib/swift",
                             "-framework AppKit",
+                            "-framework ApplicationServices",
                             "-framework Carbon",
                             "-framework CoreGraphics",
                             "-framework IOKit",
@@ -112,6 +123,7 @@
                         "src/native/keyboard.cpp",
                         "src/native/gamepad.cpp",
                         "src/native/screen.cpp",
+                        "src/native/access.cpp",
                         "src/native/uinput.cpp",
                         "src/native/wayland.cpp"
                     ],

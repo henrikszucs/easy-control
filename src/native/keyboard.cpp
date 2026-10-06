@@ -20,10 +20,13 @@
     #include <X11/keysym.h>
     #include <X11/extensions/XTest.h>
     #include <X11/XKBlib.h>
+    #include <dlfcn.h>
     #include <unistd.h>
 #endif
 
 #include <map>
+#include <mutex>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -649,6 +652,35 @@ static KeySym CodepointToKeysym(uint32_t codepoint) {
     return 0x01000000 | codepoint;
 }
 
+// The character a keysym types, as a code point; 0 for none. Keymaps hold
+// many characters as legacy keysyms (Hungarian "ő" is odoubleacute, 0x1F5,
+// not the Unicode keysym 0x1000151), so characters are looked up by what
+// the keys type. libxkbcommon, which every Linux desktop has, knows them
+// all; it is loaded at run time, so it is no build or load dependency. Without
+// it, Latin-1 and Unicode keysyms are still recognised.
+static uint32_t KeysymToCodepoint(KeySym keysym) {
+    typedef uint32_t (*ToUtf32)(uint32_t);
+    static ToUtf32 toUtf32 = nullptr;
+    static bool isLoaded = false;
+    if (!isLoaded) {
+        isLoaded = true;
+        void* library = dlopen("libxkbcommon.so.0", RTLD_LAZY | RTLD_LOCAL);
+        if (library != nullptr) {
+            toUtf32 = (ToUtf32)dlsym(library, "xkb_keysym_to_utf32");
+        }
+    }
+    if (toUtf32 != nullptr) {
+        return toUtf32((uint32_t)keysym);
+    }
+    if ((keysym >= 0x20 && keysym <= 0x7E) || (keysym >= 0xA0 && keysym <= 0xFF)) {
+        return (uint32_t)keysym;
+    }
+    if ((keysym & 0xFF000000) == 0x01000000) {
+        return (uint32_t)(keysym & 0x00FFFFFF);
+    }
+    return 0;
+}
+
 // UTF-8 -> code points, skipping malformed bytes
 static std::vector<uint32_t> DecodeUtf8(const std::string& text) {
     std::vector<uint32_t> codepoints;
@@ -722,20 +754,121 @@ static std::vector<KeyCode> SpareKeycodes(Display* display) {
     XFree(keysyms);
     return spare;
 }
+
+// where a character is on the current layout: its key, and the level
+// (0 plain, 1 Shift, 2 AltGr, 3 Shift+AltGr); the lowest level wins
+struct KeyPlace {
+    KeyCode keycode = 0;
+    int level = -1;
+};
+
+// a character, found by what the keys type; control characters (new line,
+// tab, ...) by their keysym, as no key types them as text
+static KeyPlace FindKey(Display* display, uint32_t codepoint, int group) {
+    KeyPlace place;
+    const KeySym controlKeysym = codepoint < 0x20 ? CodepointToKeysym(codepoint) : NoSymbol;
+    int minKeycode = 0;
+    int maxKeycode = 0;
+    XDisplayKeycodes(display, &minKeycode, &maxKeycode);
+    for (int level = 0; level < 4 && place.level < 0; level++) {
+        for (int keycode = minKeycode; keycode <= maxKeycode; keycode++) {
+            const KeySym keysym = XkbKeycodeToKeysym(display, (KeyCode)keycode, group, level);
+            if (keysym == NoSymbol) {
+                continue;
+            }
+            if (controlKeysym != NoSymbol ? keysym == controlKeysym : KeysymToCodepoint(keysym) == codepoint) {
+                place.keycode = (KeyCode)keycode;
+                place.level = level;
+                break;
+            }
+        }
+    }
+    return place;
+}
+
+// the modifier keys type() holds: their X keycodes, 0 when the layout has none
+struct TypingKeys {
+    KeyCode shift;
+    KeyCode altGr;
+    KeyCode control;
+    bool isWayland;
+};
+
+// presses or releases an X keycode: through the virtual keyboard on Wayland
+// (whose evdev codes are the X keycodes minus 8), through XTest on X11
+static bool SendXKey(Display* display, const TypingKeys& keys, KeyCode keycode, bool isDown, std::string& error) {
+    if (keys.isWayland) {
+        return VirtualInput::KeyboardKey((unsigned short)(keycode - 8), isDown, error);
+    }
+    XTestFakeKeyEvent(display, keycode, isDown ? True : False, CurrentTime);
+    return true;
+}
+
+// taps a key at a level, holding Shift and AltGr as that level needs
+static bool TapAtLevel(Display* display, const TypingKeys& keys, KeyCode keycode, int level, std::string& error) {
+    const bool needsShift = level == 1 || level == 3;
+    const bool needsAltGr = level >= 2;
+    bool isDone = true;
+    if (needsAltGr) {
+        isDone = SendXKey(display, keys, keys.altGr, true, error);
+    }
+    if (isDone && needsShift) {
+        isDone = SendXKey(display, keys, keys.shift, true, error);
+    }
+    isDone = isDone && SendXKey(display, keys, keycode, true, error) && SendXKey(display, keys, keycode, false, error);
+    // the modifiers go up whatever happened
+    std::string releaseError;
+    if (needsShift) {
+        SendXKey(display, keys, keys.shift, false, releaseError);
+    }
+    if (needsAltGr) {
+        SendXKey(display, keys, keys.altGr, false, releaseError);
+    }
+    return isDone;
+}
+
+// taps the key of a character the layout has; false when it has none
+static bool TapCharacter(Display* display, const TypingKeys& keys, uint32_t codepoint, int group, std::string& error) {
+    const KeyPlace place = FindKey(display, codepoint, group);
+    if (place.level < 0 || (place.level >= 2 && keys.altGr == 0) || (place.level % 2 == 1 && keys.shift == 0)) {
+        return false;
+    }
+    return TapAtLevel(display, keys, place.keycode, place.level, error);
+}
+
+// GTK's and IBus's Unicode entry: Ctrl+Shift+U, the code point in hex, then
+// space; false when the layout lacks a key it needs
+static bool TypeUnicodeEntry(Display* display, const TypingKeys& keys, uint32_t codepoint, int group, std::string& error) {
+    const KeyPlace u = FindKey(display, 'u', group);
+    if (keys.control == 0 || keys.shift == 0 || u.level != 0) {
+        return false;
+    }
+    bool isDone = SendXKey(display, keys, keys.control, true, error) && SendXKey(display, keys, keys.shift, true, error) &&
+        SendXKey(display, keys, u.keycode, true, error) && SendXKey(display, keys, u.keycode, false, error);
+    std::string releaseError;
+    SendXKey(display, keys, keys.shift, false, releaseError);
+    SendXKey(display, keys, keys.control, false, releaseError);
+    char hex[16];
+    snprintf(hex, sizeof(hex), "%x", codepoint);
+    for (const char* digit = hex; isDone && *digit != '\0'; digit++) {
+        isDone = TapCharacter(display, keys, (uint32_t)*digit, group, error);
+    }
+    return isDone && TapCharacter(display, keys, ' ', group, error);
+}
 #endif
 
 
-static void PressKey(const Napi::CallbackInfo& info, bool isDown) {
-    Napi::Env env = info.Env();
-    std::string key;
-    if (!ParseKey(info, key)) {
-        return;
-    }
+// keys pressed through keyDown and not released yet, by code, so releaseAll
+// can let them go (shared by every JS environment of the process)
+static std::mutex pressedKeysMutex;
+static std::set<std::string> pressedKeys;
 
+// presses or releases a supported key; false, after throwing, when it fails
+static bool SendKey(Napi::Env env, const std::string& key, bool isDown) {
     auto it = SpecialKeys.find(key);
     if (it == SpecialKeys.end()) {
         Napi::Error::New(env, "Key not supported").ThrowAsJavaScriptException();
-        return;
+        return false;
     }
 
     #if defined(IS_WINDOWS)
@@ -745,7 +878,7 @@ static void PressKey(const Napi::CallbackInfo& info, bool isDown) {
     #elif defined(IS_MACOS)
         if (!PostKey(it->second, isDown)) {
             Napi::Error::New(env, isDown ? "Failed to create key down event" : "Failed to create key up event").ThrowAsJavaScriptException();
-            return;
+            return false;
         }
 
     #elif defined(IS_LINUX)
@@ -754,16 +887,46 @@ static void PressKey(const Napi::CallbackInfo& info, bool isDown) {
             std::string error;
             if (!VirtualInput::KeyboardKey((unsigned short)(it->second - 8), isDown, error)) {
                 Napi::Error::New(env, error).ThrowAsJavaScriptException();
+                return false;
             }
-            return;
+            return true;
         }
         Display *display = RequireDisplay(env);
         if (display == NULL) {
-            return;
+            return false;
         }
         XTestFakeKeyEvent(display, it->second, isDown ? True : False, CurrentTime);
         XFlush(display);
     #endif
+    return true;
+}
+
+static void PressKey(const Napi::CallbackInfo& info, bool isDown) {
+    std::string key;
+    if (!ParseKey(info, key) || !SendKey(info.Env(), key, isDown)) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(pressedKeysMutex);
+    if (isDown) {
+        pressedKeys.insert(key);
+    } else {
+        pressedKeys.erase(key);
+    }
+}
+
+// Keyboard.releaseAll(): releases every key keyDown pressed and keyUp did not
+// release yet, e.g. when the remote side of a session is gone
+void Keyboard::releaseAll(const Napi::CallbackInfo& info) {
+    std::set<std::string> keys;
+    {
+        std::lock_guard<std::mutex> lock(pressedKeysMutex);
+        keys.swap(pressedKeys);
+    }
+    for (const std::string& key : keys) {
+        if (!SendKey(info.Env(), key, false)) {
+            return;
+        }
+    }
 }
 
 void Keyboard::keyDown(const Napi::CallbackInfo& info) {
@@ -871,6 +1034,13 @@ void Keyboard::type(const Napi::CallbackInfo& info) {
         CFRelease(cfString);
 
     #elif defined(IS_LINUX)
+        // Keyboard.type(text, { unicodeFallback: true }): on Wayland, enter the
+        // characters the layout has no key for with Ctrl+Shift+U
+        bool isUnicodeFallback = false;
+        if (info.Length() > 1 && info[1].IsObject()) {
+            isUnicodeFallback = info[1].As<Napi::Object>().Get("unicodeFallback").ToBoolean().Value();
+        }
+
         Display *display = XGetMainDisplay();
         if (display == NULL) {
             Napi::Error::New(env, IsWaylandSession()
@@ -885,85 +1055,53 @@ void Keyboard::type(const Napi::CallbackInfo& info) {
             group = state.group;
         }
 
-        if (IsWaylandSession()) {
-            // The keys go through the virtual keyboard, so they reach every
-            // application; which key makes which character is read from
-            // XWayland's copy of the compositor's layout. A character that
-            // layout has no key for cannot be typed: the compositor's keymap
-            // is not the client's to change.
-            std::string missing;
-            for (uint32_t codepoint : DecodeUtf8(text)) {
-                const KeySym keysym = CodepointToKeysym(codepoint);
-                const KeyCode keycode = XKeysymToKeycode(display, keysym);
-                int level = -1;
-                if (keycode != 0) {
-                    if (XkbKeycodeToKeysym(display, keycode, group, 0) == keysym) {
-                        level = 0;
-                    } else if (XkbKeycodeToKeysym(display, keycode, group, 1) == keysym) {
-                        level = 1;
-                    }
-                }
-                if (level < 0) {
-                    char hex[16];
-                    snprintf(hex, sizeof(hex), "%sU+%04X", missing.empty() ? "" : ", ", codepoint);
-                    missing += hex;
-                    continue;
-                }
+        // On Wayland the keys go through the virtual keyboard, so they reach
+        // every application; which key makes which character is read from
+        // XWayland's copy of the compositor's layout, whose keymap is not a
+        // client's to change. On X11 they go through XTest, and a character
+        // the layout has no key for is put on a spare keycode for the
+        // duration of the call, as xdotool does.
+        TypingKeys keys;
+        keys.shift = XKeysymToKeycode(display, XK_Shift_L);
+        keys.altGr = XKeysymToKeycode(display, XK_ISO_Level3_Shift);
+        keys.control = XKeysymToKeycode(display, XK_Control_L);
+        keys.isWayland = IsWaylandSession();
 
-                // X keycodes are the evdev codes plus 8
-                const unsigned short key = (unsigned short)(keycode - 8);
-                std::string error;
-                bool isDone = true;
-                if (level == 1) {
-                    isDone = VirtualInput::KeyboardKey(KEY_LEFTSHIFT, true, error);
-                }
-                isDone = isDone && VirtualInput::KeyboardKey(key, true, error)
-                    && VirtualInput::KeyboardKey(key, false, error);
-                if (level == 1) {
-                    std::string releaseError;
-                    VirtualInput::KeyboardKey(KEY_LEFTSHIFT, false, releaseError);
-                }
-                if (!isDone) {
-                    Napi::Error::New(env, error).ThrowAsJavaScriptException();
-                    return;
-                }
-            }
-            if (!missing.empty()) {
-                Napi::Error::New(env, "Not on the current keyboard layout, not typed: " + missing).ThrowAsJavaScriptException();
-            }
-            return;
-        }
-
-        const KeyCode shiftKeycode = XKeysymToKeycode(display, XK_Shift_L);
-
-        // characters the layout has no key for are put on a spare keycode for
-        // the duration of the call, as xdotool does
         std::vector<KeyCode> spare;
         bool isSpareRead = false;
         std::vector<std::pair<KeySym, KeyCode>> borrowed;
+        std::string missing;
+        std::string error;
 
         for (uint32_t codepoint : DecodeUtf8(text)) {
             const KeySym keysym = CodepointToKeysym(codepoint);
 
-            // the key for it in the current layout, and whether Shift is needed
-            KeyCode keycode = XKeysymToKeycode(display, keysym);
-            bool isShift = false;
-            if (keycode != 0) {
-                if (XkbKeycodeToKeysym(display, keycode, group, 0) == keysym) {
-                    isShift = false;
-                } else if (XkbKeycodeToKeysym(display, keycode, group, 1) == keysym && shiftKeycode != 0) {
-                    isShift = true;
-                } else {
-                    keycode = 0;    // only in another group or level
-                }
+            // on the layout, at any level up to Shift+AltGr
+            if (TapCharacter(display, keys, codepoint, group, error)) {
+                continue;
+            }
+            if (!error.empty()) {
+                break;
             }
 
-            if (keycode == 0) {
-                for (const auto& entry : borrowed) {
-                    if (entry.first == keysym) {
-                        keycode = entry.second;
+            if (keys.isWayland) {
+                if (!isUnicodeFallback || !TypeUnicodeEntry(display, keys, codepoint, group, error)) {
+                    if (!error.empty()) {
                         break;
                     }
+                    char hex[16];
+                    snprintf(hex, sizeof(hex), "%sU+%04X", missing.empty() ? "" : ", ", codepoint);
+                    missing += hex;
+                }
+                continue;
+            }
+
+            // X11: on a borrowed key
+            KeyCode keycode = 0;
+            for (const auto& entry : borrowed) {
+                if (entry.first == keysym) {
+                    keycode = entry.second;
+                    break;
                 }
             }
             if (keycode == 0) {
@@ -980,17 +1118,11 @@ void Keyboard::type(const Napi::CallbackInfo& info) {
                 XSync(display, False);
                 borrowed.push_back(std::make_pair(keysym, keycode));
             }
-
-            if (isShift) {
-                XTestFakeKeyEvent(display, shiftKeycode, True, CurrentTime);
-            }
-            XTestFakeKeyEvent(display, keycode, True, CurrentTime);
-            XTestFakeKeyEvent(display, keycode, False, CurrentTime);
-            if (isShift) {
-                XTestFakeKeyEvent(display, shiftKeycode, False, CurrentTime);
-            }
+            TapAtLevel(display, keys, keycode, 0, error);
         }
-        XSync(display, False);
+        if (!keys.isWayland) {
+            XSync(display, False);
+        }
 
         // give the borrowed keys back, once the clients have had the events
         if (!borrowed.empty()) {
@@ -1000,6 +1132,14 @@ void Keyboard::type(const Napi::CallbackInfo& info) {
                 XChangeKeyboardMapping(display, entry.second, 2, keysyms, 1);
             }
             XSync(display, False);
+        }
+
+        if (!error.empty()) {
+            Napi::Error::New(env, error).ThrowAsJavaScriptException();
+        } else if (!missing.empty()) {
+            Napi::Error::New(env, "Not on the current keyboard layout, not typed: " + missing +
+                (isUnicodeFallback ? "" : " (Keyboard.type(text, { unicodeFallback: true }) enters them in GTK and IBus applications)"))
+                .ThrowAsJavaScriptException();
         }
     #endif
 }
@@ -1248,6 +1388,7 @@ Napi::Object Keyboard::Init(Napi::Env env, Napi::Object exports) {
     Napi::Object obj = Napi::Object::New(env);
     obj.Set(Napi::String::New(env, "keyDown"), Napi::Function::New(env, Keyboard::keyDown));
     obj.Set(Napi::String::New(env, "keyUp"), Napi::Function::New(env, Keyboard::keyUp));
+    obj.Set(Napi::String::New(env, "releaseAll"), Napi::Function::New(env, Keyboard::releaseAll));
     obj.Set(Napi::String::New(env, "isKeySupported"), Napi::Function::New(env, Keyboard::isKeySupported));
     obj.Set(Napi::String::New(env, "type"), Napi::Function::New(env, Keyboard::type));
     obj.Set(Napi::String::New(env, "GetLayout"), Napi::Function::New(env, Keyboard::GetLayout));

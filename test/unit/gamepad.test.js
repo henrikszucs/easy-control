@@ -17,7 +17,7 @@ const AXIS_COUNT = 6;
 // one probe decides which half of this file runs
 let unavailableReason = "";
 try {
-    Gamepad.create().destroy();
+    (await Gamepad.create()).destroy();
 } catch (error) {
     unavailableReason = error.message;
 }
@@ -33,11 +33,22 @@ test("Gamepad.list starts empty", function() {
     assert.deepEqual(Gamepad.list(), []);
 });
 
-test("Gamepad.create throws an Error that says why", { "skip": !skipNoDriver && "a virtual gamepad can be made here" }, function() {
-    assert.throws(function() { Gamepad.create(); }, function(error) {
-        return error instanceof Error && error.message.length > 0;
+test("Gamepad.create returns a Promise", function() {
+    const created = Gamepad.create();
+    assert.ok(created instanceof Promise);
+    // whatever it gives, nothing is left plugged in
+    return created.then(function(gamepad) { gamepad.destroy(); }, function() {});
+});
+
+test("Gamepad.create rejects with an Error that says why", { "skip": !skipNoDriver && "a virtual gamepad can be made here" }, async function() {
+    await assert.rejects(Gamepad.create(), function(error) {
+        return error instanceof Error && error.message.length > 0 && typeof error.code === "string" && error.code.startsWith("EASYCONTROL_");
     });
     assert.deepEqual(Gamepad.list(), [], "a failed create leaves nothing in the list");
+});
+
+test("a gamepad is only made by Gamepad.create", function() {
+    assert.throws(function() { new Gamepad.create.Gamepad(); }, { "name": "TypeError", "message": /Gamepad\.create\(\)/ });
 });
 
 test("getDriverStatus reports the driver", function() {
@@ -61,11 +72,11 @@ test("getDriverStatus reports the driver", function() {
     }
 });
 
-test("without the driver, create throws EASYCONTROL_DRIVER_MISSING", {
+test("without the driver, create rejects with EASYCONTROL_DRIVER_MISSING", {
     "skip": (os.platform() !== "win32" && "the driver is Windows only") ||
         (Gamepad.getDriverStatus()["isInstalled"] && "the driver is installed")
-}, function() {
-    assert.throws(function() { Gamepad.create(); }, { "code": "EASYCONTROL_DRIVER_MISSING", "message": /installDriver/ });
+}, async function() {
+    await assert.rejects(Gamepad.create(), { "code": "EASYCONTROL_DRIVER_MISSING", "message": /installDriver/ });
 });
 
 test("installDriver and uninstallDriver resolve at once where there is nothing to install", {
@@ -76,8 +87,8 @@ test("installDriver and uninstallDriver resolve at once where there is nothing t
     assert.equal(await Gamepad.uninstallDriver(), undefined);
 });
 
-test("create plugs in an active gamepad that list reports", { "skip": skipNoDriver }, function() {
-    const gamepad = Gamepad.create();
+test("create plugs in an active gamepad that list reports", { "skip": skipNoDriver }, async function() {
+    const gamepad = await Gamepad.create();
     try {
         assert.equal(gamepad.isActive(), true);
         assert.ok(gamepad instanceof Gamepad.create.Gamepad);
@@ -87,8 +98,8 @@ test("create plugs in an active gamepad that list reports", { "skip": skipNoDriv
     }
 });
 
-test("every button and axis takes input", { "skip": skipNoDriver }, function() {
-    const gamepad = Gamepad.create();
+test("every button and axis takes input", { "skip": skipNoDriver }, async function() {
+    const gamepad = await Gamepad.create();
     try {
         for (let btn = 0; btn < BUTTON_COUNT; btn++) {
             gamepad.buttonDown(btn);
@@ -105,8 +116,8 @@ test("every button and axis takes input", { "skip": skipNoDriver }, function() {
     }
 });
 
-test("buttons and axes reject bad indices and values", { "skip": skipNoDriver }, function() {
-    const gamepad = Gamepad.create();
+test("buttons and axes reject bad indices and values", { "skip": skipNoDriver }, async function() {
+    const gamepad = await Gamepad.create();
     try {
         for (const fn of ["buttonDown", "buttonUp"]) {
             assert.throws(function() { gamepad[fn](); }, TypeError);
@@ -127,12 +138,12 @@ test("buttons and axes reject bad indices and values", { "skip": skipNoDriver },
     }
 });
 
-test("several gamepads can be plugged in at once", { "skip": skipNoDriver }, function() {
-    const first = Gamepad.create();
-    const second = Gamepad.create();
+test("several gamepads can be plugged in at once", { "skip": skipNoDriver }, async function() {
+    const [first, second] = await Promise.all([Gamepad.create(), Gamepad.create()]);
     try {
         assert.notEqual(first, second);
-        assert.deepEqual(Gamepad.list(), [first, second]);
+        assert.equal(Gamepad.list().length, 2);
+        assert.ok(Gamepad.list().includes(first) && Gamepad.list().includes(second));
         first.destroy();
         assert.deepEqual(Gamepad.list(), [second]);
         assert.equal(second.isActive(), true, "destroying one leaves the other active");
@@ -142,8 +153,8 @@ test("several gamepads can be plugged in at once", { "skip": skipNoDriver }, fun
     }
 });
 
-test("destroy unplugs: inactive, out of the list, and its methods throw", { "skip": skipNoDriver }, function() {
-    const gamepad = Gamepad.create();
+test("destroy unplugs: inactive, out of the list, and its methods throw", { "skip": skipNoDriver }, async function() {
+    const gamepad = await Gamepad.create();
     gamepad.destroy();
     assert.equal(gamepad.isActive(), false);
     assert.deepEqual(Gamepad.list(), []);

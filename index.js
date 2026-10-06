@@ -1,10 +1,17 @@
 "use strict";
 
+// npm run build                      the addon for this machine, then the JS loaders
+// npm run build -- --arch arm64      the addon for another CPU (cross-compiled)
+// npm run clean                      removes the build output
+// npm run clean -- --all             also node_modules/ and the WDK download cache
+
 import os from "node:os";
 import process from "node:process";
 import { spawn } from "node:child_process";
+import { createRequire } from "node:module";
 import fs from "node:fs/promises";
-import path from "node:path";
+
+const require = createRequire(import.meta.url);
 
 
 // search in parameters
@@ -36,11 +43,15 @@ const getArg = function(args, argName, isKeyValue=false, isInline=false) {
 const build = async (arch) => {
     const distDir = "./dist/" + os.platform() + "-" + arch + "/";
 
-    // run node-gyp
-    await fs.rm("./build/", { "recursive": true, "force": true });  //for safety
-    const ls = spawn("node-gyp", ["configure", "build", "--arch=" + arch], {
+    // run node-gyp, the project's own, through this Node: no shell, and no
+    // node-gyp needed on the PATH
+    // nothing of a build for another CPU may be reused (on macOS the Swift
+    // part is built into build_swift/)
+    await fs.rm("./build/", { "recursive": true, "force": true });
+    await fs.rm("./build_swift/", { "recursive": true, "force": true });
+    const nodeGyp = require.resolve("node-gyp/bin/node-gyp.js");
+    const ls = spawn(process.execPath, [nodeGyp, "configure", "build", "--arch=" + arch], {
         "cwd": process.cwd(),
-        "shell": true,
         "stdio": "inherit"
     });
     let code = await new Promise((resolve) => {
@@ -56,7 +67,6 @@ const build = async (arch) => {
 
     // copy built files
     process.stdout.write("Copying built files...   ");
-    //await fs.rm("./dist/", { "recursive": true, "force": true });   // for dev
     await fs.mkdir(distDir, { "recursive": true });
 
     if (os.platform() === "win32") {
@@ -81,37 +91,21 @@ const build = async (arch) => {
 
     // minify the JS loaders into dist
     await import("./src/build.js");
-
-    // test environment copy
-    /*
-    const distSrc = "./dist/";
-    const distDest = "./dev/test/resources/app/dist/";
-    await fs.mkdir(distDest, { "recursive": true });
-    const distFiles = await fs.readdir(distSrc, {"recursive": true});
-    for (const file of distFiles) {
-        const fileSrc = path.join(distSrc, file);
-        const fileDest = path.join(distDest, file);
-        const isDir = (await fs.stat(fileSrc)).isDirectory();
-        if (isDir) {
-            await fs.mkdir(fileDest, {"recursive": true});
-        } else {
-            await fs.cp(fileSrc, fileDest), { "recursive": true };
-        }
-    }*/
 };
 
 
-// uninstall function
-const uninstall = async () => {
-    process.stdout.write("Removing built files...  ");
+// clean function: the build output only; with all, also what npm install
+// and the gamepad build downloaded
+const clean = async (isAll) => {
+    process.stdout.write("Removing build output... ");
     const pathList = [
-        "./package-lock.json",
-        "./node_modules",
         "./build",
-        "./.vscode",
-        "./tmp",
-        "./build_swift"
+        "./build_swift",
+        "./tmp"
     ];
+    if (isAll) {
+        pathList.push("./node_modules", "./build_wdk");
+    }
     for (const dir of pathList) {
         try {
             await fs.rm(dir, { "recursive": true, "force": true });
@@ -119,27 +113,14 @@ const uninstall = async () => {
             console.error(`Error removing ${dir}:`, error);
         }
     }
-
-    /*
-    const distSrc = "./dev/test";
-    const distFiles = await fs.readdir(distSrc);
-    for (const file of distFiles) {
-        const fileSrc = path.join(distSrc, file);
-        const isDir = (await fs.stat(fileSrc)).isDirectory();
-        if (!isDir) {
-            await fs.rm(fileSrc);
-        }
-    }*/
-
     process.stdout.write("done\n");
 };
 
 
 // start main function
 const main = async () => {
-    const uninstallFlag = getArg(process.argv, "--uninstall", false) || false;
-    if (uninstallFlag) {
-        await uninstall();
+    if (getArg(process.argv, "--clean", false)) {
+        await clean(getArg(process.argv, "--all", false) || false);
     } else {
         await build(getArg(process.argv, "--arch", true) || os.arch());
     }

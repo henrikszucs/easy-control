@@ -12,6 +12,7 @@
 #include "keyboard.h"
 #include "gamepad.h"
 #include "screen.h"
+#include "access.h"
 
 
 Napi::Object InitAll(Napi::Env env, Napi::Object exports) {
@@ -20,6 +21,7 @@ Napi::Object InitAll(Napi::Env env, Napi::Object exports) {
     obj.Set(Napi::String::New(env, "Keyboard"), Keyboard::Init(env, exports));
     obj.Set(Napi::String::New(env, "Gamepad"), Gamepad::Init(env, exports));
     obj.Set(Napi::String::New(env, "Screen"), IScreen::Init(env, exports));
+    obj.Set(Napi::String::New(env, "Platform"), InputAccess::Init(env, exports));
 
     return obj;
 }

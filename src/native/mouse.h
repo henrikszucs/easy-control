@@ -16,6 +16,7 @@ class Mouse {
         static void setPosition(const Napi::CallbackInfo& info);
         static void buttonDown(const Napi::CallbackInfo& info);
         static void buttonUp(const Napi::CallbackInfo& info);
+        static void releaseAll(const Napi::CallbackInfo& info);
         static void scrollDown(const Napi::CallbackInfo& info);
         static void scrollUp(const Napi::CallbackInfo& info);
 };

@@ -7,7 +7,7 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 
-import { Mouse, Screen, pixelTolerance } from "./helpers.js";
+import { Mouse, Screen, pixelTolerance, skipNoInputAccess } from "./helpers.js";
 
 const startX = Mouse.getX();
 const startY = Mouse.getY();
@@ -24,7 +24,7 @@ test("getX and getY return finite numbers", function() {
     assert.ok(Number.isFinite(Mouse.getY()));
 });
 
-test("a position read can be set back unchanged", function() {
+test("a position read can be set back unchanged", { "skip": skipNoInputAccess }, function() {
     const x = Mouse.getX();
     const y = Mouse.getY();
     Mouse.setPosition(x, y);
@@ -32,7 +32,7 @@ test("a position read can be set back unchanged", function() {
     assertNear(Mouse.getY(), y, 0.01, "y");
 });
 
-test("setPosition reaches points on every screen", function() {
+test("setPosition reaches points on every screen", { "skip": skipNoInputAccess }, function() {
     const screens = Screen.list();
     const tolerance = pixelTolerance(screens);
     for (const s of screens) {
@@ -49,7 +49,7 @@ test("setPosition reaches points on every screen", function() {
     }
 });
 
-test("setX moves only horizontally and setY only vertically", function() {
+test("setX moves only horizontally and setY only vertically", { "skip": skipNoInputAccess }, function() {
     const primary = Screen.list().find(function(s) {
         return s["isPrimary"];
     });
@@ -123,5 +123,29 @@ test("scrollDown and scrollUp need an amount and a direction flag", function() {
         assert.throws(function() { fn(1); }, TypeError);
         assert.throws(function() { fn("1", false); }, TypeError);
         assert.throws(function() { fn(1, "no"); }, TypeError);
+        assert.throws(function() { fn(NaN, false); }, { "name": "TypeError", "message": /finite/ });
+        assert.throws(function() { fn(Infinity, true); }, TypeError);
+    }
+});
+
+test("releaseAll with no button down does nothing and throws nothing", function() {
+    assert.equal(Mouse.releaseAll(), undefined);
+    assert.equal(Mouse.releaseAll(), undefined);
+});
+
+test("getIcon: fully transparent pixels are black, and it is empty exactly while getIconId is 0", function() {
+    const id = Mouse.getIconId();
+    const icon = Mouse.getIcon();
+    if (id === 0) {
+        assert.equal(icon["width"], 0, "hidden pointer, empty picture");
+        assert.equal(icon["data"].length, 0);
+        return;
+    }
+    assert.ok(icon["width"] > 0 && icon["height"] > 0, "a shown pointer has a picture");
+    for (let i = 0; i < icon["data"].length; i += 4) {
+        if (icon["data"][i + 3] === 0) {
+            assert.ok(icon["data"][i] === 0 && icon["data"][i + 1] === 0 && icon["data"][i + 2] === 0,
+                "transparent pixel " + (i / 4) + " is not black");
+        }
     }
 });

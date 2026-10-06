@@ -2,7 +2,7 @@
 
 import Control from "./easy-control.cjs";
 
-const { Mouse, Keyboard, Gamepad, Screen } = Control;
+const { Mouse, Keyboard, Gamepad, Screen, Platform } = Control;
 
-export { Mouse, Keyboard, Gamepad, Screen };
+export { Mouse, Keyboard, Gamepad, Screen, Platform };
 export default Control;

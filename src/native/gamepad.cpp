@@ -57,81 +57,75 @@ Napi::Value Gamepad::list(const Napi::CallbackInfo& info) {
     return gamepadsArr;
 }
 
-// Gamepad.create(): plugs in a new virtual gamepad, or throws why it cannot
-Napi::Value Gamepad::CreateObject(const Napi::CallbackInfo& info) {
-    Napi::Env env = info.Env();
-    GamepadAddonData* data = env.GetInstanceData<GamepadAddonData>();
+// What plugging in a gamepad gives: the platform's handle to it.
+struct PadHandle {
+    #if defined(IS_WINDOWS)
+        WinPad* pad = nullptr;
+    #elif defined(IS_MACOS)
+        int gamepadId = -1;
+    #elif defined(IS_LINUX)
+        int fd = -1;
+    #endif
+};
 
-    Napi::Object gamepad = data->constructor.New({});
-    if (env.IsExceptionPending()) {
-        return env.Undefined();
-    }
-    data->gamepads.push_back(Napi::Persistent(gamepad));
-    return gamepad;
-}
-
-Gamepad::Gamepad(const Napi::CallbackInfo& info) : Napi::ObjectWrap<Gamepad>(info) {
-    Napi::Env env = info.Env();
-
+// Plugs in a virtual gamepad; false, with a message and an error code, when
+// it cannot. Runs off the JS thread, so it touches no JS value.
+static bool OpenPad(PadHandle& handle, std::string& message, std::string& code) {
+    code = "EASYCONTROL_CREATE_FAILED";
     #if defined(IS_WINDOWS)
         WinPadError error;
-        this->m_pad = WinPadCreate(error);
-        if (this->m_pad == nullptr) {
-            Napi::Error jsError = Napi::Error::New(env, error.message);
-            jsError.Set("code", Napi::String::New(env, error.code));
-            jsError.ThrowAsJavaScriptException();
-            return;
+        handle.pad = WinPadCreate(error);
+        if (handle.pad == nullptr) {
+            message = error.message;
+            code = error.code;
+            return false;
         }
-        this->m_active = true;
+        return true;
 
     #elif defined(IS_MACOS)
-        // Create gamepad via GamepadBridge
-        this->m_gamepad_id = [GamepadBridge createGamepad];
-        if (this->m_gamepad_id < 0) {
-            Napi::Error::New(env, "Failed to create the virtual gamepad (needs macOS 26 and the com.apple.developer.hid.virtual.device entitlement)").ThrowAsJavaScriptException();
-            return;
+        handle.gamepadId = [GamepadBridge createGamepad];
+        if (handle.gamepadId < 0) {
+            message = "Failed to create the virtual gamepad (needs macOS 26 and the com.apple.developer.hid.virtual.device entitlement)";
+            return false;
         }
-        this->m_active = true;
+        return true;
 
     #elif defined(IS_LINUX)
-        std::string openError;
-        this->m_uinput_fd = OpenUinput(openError);
-        if (this->m_uinput_fd < 0) {
-            Napi::Error::New(env, openError).ThrowAsJavaScriptException();
-            return;
+        int fd = OpenUinput(message);
+        if (fd < 0) {
+            return false;
         }
 
         // Enable event types
-        if (ioctl(this->m_uinput_fd, UI_SET_EVBIT, EV_KEY) < 0 ||
-            ioctl(this->m_uinput_fd, UI_SET_EVBIT, EV_ABS) < 0) {
-            const int error = errno;
-            this->Release();
-            Napi::Error::New(env, std::string("Failed to set up the virtual gamepad: ") + strerror(error)).ThrowAsJavaScriptException();
-            return;
+        if (ioctl(fd, UI_SET_EVBIT, EV_KEY) < 0 ||
+            ioctl(fd, UI_SET_EVBIT, EV_ABS) < 0) {
+            message = std::string("Failed to set up the virtual gamepad: ") + strerror(errno);
+            close(fd);
+            return false;
         }
 
         // Enable buttons (BTN_GAMEPAD + standard Xbox buttons)
-        ioctl(this->m_uinput_fd, UI_SET_KEYBIT, BTN_SOUTH);      // A
-        ioctl(this->m_uinput_fd, UI_SET_KEYBIT, BTN_EAST);       // B
-        ioctl(this->m_uinput_fd, UI_SET_KEYBIT, BTN_NORTH);      // X
-        ioctl(this->m_uinput_fd, UI_SET_KEYBIT, BTN_WEST);       // Y
-        ioctl(this->m_uinput_fd, UI_SET_KEYBIT, BTN_TL);         // LB
-        ioctl(this->m_uinput_fd, UI_SET_KEYBIT, BTN_TR);         // RB
-        ioctl(this->m_uinput_fd, UI_SET_KEYBIT, BTN_SELECT);     // Back
-        ioctl(this->m_uinput_fd, UI_SET_KEYBIT, BTN_START);      // Start
-        ioctl(this->m_uinput_fd, UI_SET_KEYBIT, BTN_MODE);       // Guide
-        ioctl(this->m_uinput_fd, UI_SET_KEYBIT, BTN_THUMBL);     // Left Stick
-        ioctl(this->m_uinput_fd, UI_SET_KEYBIT, BTN_THUMBR);     // Right Stick
+        ioctl(fd, UI_SET_KEYBIT, BTN_SOUTH);      // A
+        ioctl(fd, UI_SET_KEYBIT, BTN_EAST);       // B
+        ioctl(fd, UI_SET_KEYBIT, BTN_NORTH);      // X
+        ioctl(fd, UI_SET_KEYBIT, BTN_WEST);       // Y
+        ioctl(fd, UI_SET_KEYBIT, BTN_TL);         // LB
+        ioctl(fd, UI_SET_KEYBIT, BTN_TR);         // RB
+        ioctl(fd, UI_SET_KEYBIT, BTN_SELECT);     // Back
+        ioctl(fd, UI_SET_KEYBIT, BTN_START);      // Start
+        ioctl(fd, UI_SET_KEYBIT, BTN_MODE);       // Guide
+        ioctl(fd, UI_SET_KEYBIT, BTN_THUMBL);     // Left Stick
+        ioctl(fd, UI_SET_KEYBIT, BTN_THUMBR);     // Right Stick
 
         // Enable axes
-        ioctl(this->m_uinput_fd, UI_SET_ABSBIT, ABS_X);          // Left stick X
-        ioctl(this->m_uinput_fd, UI_SET_ABSBIT, ABS_Y);          // Left stick Y
-        ioctl(this->m_uinput_fd, UI_SET_ABSBIT, ABS_RX);         // Right stick X
-        ioctl(this->m_uinput_fd, UI_SET_ABSBIT, ABS_RY);         // Right stick Y
-        ioctl(this->m_uinput_fd, UI_SET_ABSBIT, ABS_Z);          // Left trigger
-        ioctl(this->m_uinput_fd, UI_SET_ABSBIT, ABS_RZ);         // Right trigger
-        ioctl(this->m_uinput_fd, UI_SET_ABSBIT, ABS_HAT0X);      // D-pad X
-        ioctl(this->m_uinput_fd, UI_SET_ABSBIT, ABS_HAT0Y);      // D-pad Y
+        ioctl(fd, UI_SET_ABSBIT, ABS_X);          // Left stick X
+        ioctl(fd, UI_SET_ABSBIT, ABS_Y);          // Left stick Y
+        ioctl(fd, UI_SET_ABSBIT, ABS_RX);         // Right stick X
+        ioctl(fd, UI_SET_ABSBIT, ABS_RY);         // Right stick Y
+        ioctl(fd, UI_SET_ABSBIT, ABS_Z);          // Left trigger
+        ioctl(fd, UI_SET_ABSBIT, ABS_RZ);         // Right trigger
+        ioctl(fd, UI_SET_ABSBIT, ABS_HAT0X);      // D-pad X
+        ioctl(fd, UI_SET_ABSBIT, ABS_HAT0Y);      // D-pad Y
 
         // Setup device
         struct uinput_setup usetup;
@@ -151,40 +145,131 @@ Gamepad::Gamepad(const Napi::CallbackInfo& info) : Napi::ObjectWrap<Gamepad>(inf
         abs_setup.absinfo.maximum = 32767;
         abs_setup.absinfo.value = 0;
         const unsigned short sticks[] = {ABS_X, ABS_Y, ABS_RX, ABS_RY};
-        for (unsigned short code : sticks) {
-            abs_setup.code = code;
-            ioctl(this->m_uinput_fd, UI_ABS_SETUP, &abs_setup);
+        for (unsigned short stick : sticks) {
+            abs_setup.code = stick;
+            ioctl(fd, UI_ABS_SETUP, &abs_setup);
         }
 
         // Triggers (0-255)
         abs_setup.absinfo.minimum = 0;
         abs_setup.absinfo.maximum = 255;
         abs_setup.code = ABS_Z;
-        ioctl(this->m_uinput_fd, UI_ABS_SETUP, &abs_setup);
+        ioctl(fd, UI_ABS_SETUP, &abs_setup);
         abs_setup.code = ABS_RZ;
-        ioctl(this->m_uinput_fd, UI_ABS_SETUP, &abs_setup);
+        ioctl(fd, UI_ABS_SETUP, &abs_setup);
 
         // D-pad (-1, 0, 1)
         abs_setup.absinfo.minimum = -1;
         abs_setup.absinfo.maximum = 1;
         abs_setup.code = ABS_HAT0X;
-        ioctl(this->m_uinput_fd, UI_ABS_SETUP, &abs_setup);
+        ioctl(fd, UI_ABS_SETUP, &abs_setup);
         abs_setup.code = ABS_HAT0Y;
-        ioctl(this->m_uinput_fd, UI_ABS_SETUP, &abs_setup);
+        ioctl(fd, UI_ABS_SETUP, &abs_setup);
 
         // Create the device. It takes the system a moment to announce it, so
         // applications may miss input sent right after this returns.
-        if (ioctl(this->m_uinput_fd, UI_DEV_SETUP, &usetup) < 0 ||
-            ioctl(this->m_uinput_fd, UI_DEV_CREATE) < 0) {
-            const int error = errno;
-            close(this->m_uinput_fd);
-            this->m_uinput_fd = -1;
-            Napi::Error::New(env, std::string("Failed to create the virtual gamepad: ") + strerror(error)).ThrowAsJavaScriptException();
-            return;
+        if (ioctl(fd, UI_DEV_SETUP, &usetup) < 0 ||
+            ioctl(fd, UI_DEV_CREATE) < 0) {
+            message = std::string("Failed to create the virtual gamepad: ") + strerror(errno);
+            close(fd);
+            return false;
+        }
+        handle.fd = fd;
+        return true;
+    #endif
+}
+
+// Unplugs a gamepad that never got its JS object.
+static void ClosePad(PadHandle& handle) {
+    #if defined(IS_WINDOWS)
+        WinPadDestroy(handle.pad);
+        handle.pad = nullptr;
+    #elif defined(IS_MACOS)
+        if (handle.gamepadId >= 0) {
+            [GamepadBridge destroyGamepad:handle.gamepadId];
+            handle.gamepadId = -1;
+        }
+    #elif defined(IS_LINUX)
+        if (handle.fd >= 0) {
+            ioctl(handle.fd, UI_DEV_DESTROY);
+            close(handle.fd);
+            handle.fd = -1;
+        }
+    #endif
+}
+
+// plugs a gamepad in off the JS thread (on Windows that starts the service
+// and waits for the devices) and resolves with its object
+class CreatePadWorker : public Napi::AsyncWorker {
+    public:
+        explicit CreatePadWorker(Napi::Env env)
+            : Napi::AsyncWorker(env), m_deferred(Napi::Promise::Deferred::New(env)) {}
+
+        Napi::Promise Promise() {
+            return this->m_deferred.Promise();
         }
 
-        this->m_active = true;
+        void Execute() override {
+            this->m_isOpen = OpenPad(this->m_handle, this->m_message, this->m_code);
+        }
+
+        void OnOK() override {
+            Napi::Env env = this->Env();
+            if (!this->m_isOpen) {
+                Napi::Error error = Napi::Error::New(env, this->m_message);
+                error.Set("code", Napi::String::New(env, this->m_code));
+                this->m_deferred.Reject(error.Value());
+                return;
+            }
+            // the object takes the handle over
+            GamepadAddonData* data = env.GetInstanceData<GamepadAddonData>();
+            Napi::Object gamepad = data->constructor.New({ Napi::External<PadHandle>::New(env, &this->m_handle) });
+            if (env.IsExceptionPending()) {
+                const Napi::Error error = env.GetAndClearPendingException();
+                ClosePad(this->m_handle);
+                this->m_deferred.Reject(error.Value());
+                return;
+            }
+            data->gamepads.push_back(Napi::Persistent(gamepad));
+            this->m_deferred.Resolve(gamepad);
+        }
+
+    private:
+        Napi::Promise::Deferred m_deferred;
+        PadHandle m_handle;
+        bool m_isOpen = false;
+        std::string m_message;
+        std::string m_code;
+};
+
+// Gamepad.create(): a Promise of a new virtual gamepad; rejects with an Error
+// saying why, and a code (EASYCONTROL_DRIVER_MISSING, ...), when it cannot
+Napi::Value Gamepad::CreateObject(const Napi::CallbackInfo& info) {
+    CreatePadWorker* worker = new CreatePadWorker(info.Env());
+    Napi::Promise promise = worker->Promise();
+    worker->Queue();
+    return promise;
+}
+
+// made only by Gamepad.create(), which hands over the plugged-in gamepad
+Gamepad::Gamepad(const Napi::CallbackInfo& info) : Napi::ObjectWrap<Gamepad>(info) {
+    Napi::Env env = info.Env();
+    if (info.Length() < 1 || !info[0].IsExternal()) {
+        Napi::TypeError::New(env, "Use Gamepad.create() to make a gamepad").ThrowAsJavaScriptException();
+        return;
+    }
+    PadHandle* handle = info[0].As<Napi::External<PadHandle>>().Data();
+    #if defined(IS_WINDOWS)
+        this->m_pad = handle->pad;
+        handle->pad = nullptr;
+    #elif defined(IS_MACOS)
+        this->m_gamepad_id = handle->gamepadId;
+        handle->gamepadId = -1;
+    #elif defined(IS_LINUX)
+        this->m_uinput_fd = handle->fd;
+        handle->fd = -1;
     #endif
+    this->m_active = true;
 }
 
 Gamepad::~Gamepad() {

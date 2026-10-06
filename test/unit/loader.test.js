@@ -2,14 +2,26 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { createRequire } from "node:module";
 
-import { Control, distPath, platformDir, rootPath } from "./helpers.js";
+import { Control, Platform, distPath, platformDir, rootPath } from "./helpers.js";
 
 const require = createRequire(import.meta.url);
 const pkg = JSON.parse(await fs.readFile(path.join(rootPath, "package.json"), "utf8"));
+
+// every function of each object, as the README and easy-control.d.ts give them
+const API = {
+    "Mouse": ["getX", "getY", "getIcon", "getIconId", "setX", "setY", "setPosition",
+        "buttonDown", "buttonUp", "releaseAll", "scrollDown", "scrollUp"],
+    "Keyboard": ["keyDown", "keyUp", "releaseAll", "isKeySupported", "type", "GetLayout", "SetLayout"],
+    "Gamepad": ["list", "create", "getDriverStatus", "installDriver", "uninstallDriver"],
+    "Screen": ["list"],
+    "Platform": ["hasInputAccess", "requestInputAccess"]
+};
 
 test("dist holds the native addon for the running platform", async function() {
     const stat = await fs.stat(path.join(distPath, platformDir, "easy-control.node"));
@@ -24,39 +36,75 @@ test("dist loaders carry the version banner", async function() {
     }
 });
 
-test("CommonJS loader exports Mouse, Keyboard, Gamepad and Screen", function() {
-    assert.deepEqual(Object.keys(Control).sort(), ["Gamepad", "Keyboard", "Mouse", "Screen"]);
+test("CommonJS loader exports Mouse, Keyboard, Gamepad, Screen and Platform", function() {
+    assert.deepEqual(Object.keys(Control).sort(), ["Gamepad", "Keyboard", "Mouse", "Platform", "Screen"]);
 });
 
 test("ES module loader has the same objects as named and default exports", async function() {
     const esm = await import("../../dist/easy-control.mjs");
     assert.equal(esm.default, Control);
-    for (const name of ["Mouse", "Keyboard", "Gamepad", "Screen"]) {
+    for (const name of Object.keys(API)) {
         assert.equal(esm[name], Control[name], name);
     }
 });
 
-test("package exports resolve to the dist loaders", function() {
-    assert.equal(pkg["exports"]["."]["require"], "./dist/easy-control.cjs");
-    assert.equal(pkg["exports"]["."]["import"], "./dist/easy-control.mjs");
-    assert.equal(require(path.join(rootPath, pkg["main"])), Control);
+test("the package name resolves to the dist loaders, for require and import", async function() {
+    assert.equal(require("easy-control"), Control);
+    assert.equal((await import("easy-control")).default, Control);
 });
 
-test("the addon can be required directly by absolute path (Electron use)", function() {
+test("the addon can be required directly by absolute path, with the same objects", function() {
     const direct = require(path.join(distPath, platformDir, "easy-control.node"));
-    assert.equal(direct, Control);
+    for (const name of ["Mouse", "Keyboard", "Gamepad", "Screen"]) {
+        assert.equal(direct[name], Control[name], name);
+    }
 });
 
-test("every API member is a function", function() {
-    const api = {
-        "Mouse": ["getX", "getY", "getIcon", "getIconId", "setX", "setY", "setPosition", "buttonDown", "buttonUp", "scrollDown", "scrollUp"],
-        "Keyboard": ["keyDown", "keyUp", "isKeySupported", "type", "GetLayout", "SetLayout"],
-        "Gamepad": ["list", "create", "getDriverStatus", "installDriver", "uninstallDriver"],
-        "Screen": ["list"]
-    };
-    for (const [object, members] of Object.entries(api)) {
+test("every API member is a function, and there are no others", function() {
+    for (const [object, members] of Object.entries(API)) {
         for (const member of members) {
             assert.equal(typeof Control[object][member], "function", object + "." + member);
         }
+        const functions = Object.keys(Control[object]).filter(function(key) {
+            return typeof Control[object][key] === "function";
+        });
+        assert.deepEqual(functions.sort(), [...members].sort(), object + " has exactly the documented functions");
     }
+});
+
+test("Platform describes the running target", function() {
+    assert.equal(Platform.target, os.platform() + "-" + os.arch());
+    assert.deepEqual([...Platform.supportedTargets],
+        ["darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64", "win32-arm64", "win32-x64"]);
+    assert.equal(Platform.isSupported, true);
+    assert.equal(Platform.loadError, null);
+    assert.equal(typeof Platform.hasInputAccess(), "boolean");
+    assert.ok(Object.isFrozen(Platform));
+});
+
+test("Platform.requestInputAccess resolves with a boolean", { "skip": os.platform() === "darwin" && "shows the system prompt on macOS" }, async function() {
+    assert.equal(await Platform.requestInputAccess(), Platform.hasInputAccess());
+});
+
+test("on an unsupported target the import works and every function says why", function() {
+    // a child process that reports itself as a CPU no build exists for
+    const script = [
+        "Object.defineProperty(process, 'arch', { value: 'mips' });",
+        "const c = require(" + JSON.stringify(path.join(distPath, "easy-control.cjs")) + ");",
+        "const result = { isSupported: c.Platform.isSupported, loadError: c.Platform.loadError,",
+        "    hasInputAccess: c.Platform.hasInputAccess(), target: c.Platform.target };",
+        "try { c.Mouse.getX(); } catch (error) { result.mouseCode = error.code; result.mouseMessage = error.message; }",
+        "c.Gamepad.create().catch((error) => { result.gamepadCode = error.code; })",
+        "    .then(() => c.Platform.requestInputAccess()).then((access) => { result.requestInputAccess = access;",
+        "    console.log(JSON.stringify(result)); });"
+    ].join("\n");
+    const result = JSON.parse(execFileSync(process.execPath, ["-e", script], { "encoding": "utf8" }));
+    assert.equal(result.isSupported, false);
+    assert.equal(result.target, os.platform() + "-mips");
+    assert.match(result.loadError, /no build for .*-mips; it supports darwin-arm64/);
+    assert.equal(result.hasInputAccess, false);
+    assert.equal(result.requestInputAccess, false);
+    assert.equal(result.mouseCode, "EASYCONTROL_UNSUPPORTED_PLATFORM");
+    assert.equal(result.mouseMessage, result.loadError);
+    assert.equal(result.gamepadCode, "EASYCONTROL_UNSUPPORTED_PLATFORM", "a Promise function rejects rather than throws");
 });

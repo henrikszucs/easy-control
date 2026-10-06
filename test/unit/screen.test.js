@@ -10,7 +10,7 @@ test("Screen.list returns at least one screen with the documented fields", funct
     assert.ok(Array.isArray(screens));
     assert.ok(screens.length >= 1, "no screen reported");
     for (const s of screens) {
-        assert.deepEqual(Object.keys(s).sort(), ["height", "isPrimary", "scaleFactor", "width", "x", "y"]);
+        assert.deepEqual(Object.keys(s).sort(), ["height", "id", "isPrimary", "name", "scaleFactor", "width", "x", "y"]);
         assert.equal(typeof s["isPrimary"], "boolean");
         for (const field of ["width", "height", "x", "y", "scaleFactor"]) {
             assert.ok(Number.isFinite(s[field]), field + " is a finite number");
@@ -56,4 +56,14 @@ test("the pointer position lies on a listed screen", function() {
 
 test("Screen.list is stable between calls", function() {
     assert.deepEqual(Screen.list(), Screen.list());
+});
+
+test("every screen has an id, unique, and a name", function() {
+    const screens = Screen.list();
+    for (const s of screens) {
+        assert.equal(typeof s["id"], "string");
+        assert.ok(s["id"].length > 0, "id is not empty");
+        assert.equal(typeof s["name"], "string");
+    }
+    assert.equal(new Set(screens.map(function(s) { return s["id"]; })).size, screens.length, "ids are unique");
 });

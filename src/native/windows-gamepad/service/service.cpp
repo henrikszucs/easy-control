@@ -38,6 +38,44 @@ static LONG connectionCount = 0;
 static ULONGLONG lastActive = 0;
 
 
+// %ProgramData%\easy-control\gamepad-service.log, at most LOG_MAX_BYTES:
+// when bigger, it becomes gamepad-service.log.old and a new one starts
+static const LONGLONG LOG_MAX_BYTES = 256 * 1024;
+static std::mutex logMutex;
+
+static void AppendToLogFile(const wchar_t* line)
+{
+    wchar_t folder[MAX_PATH];
+    if (GetEnvironmentVariableW(L"ProgramData", folder, MAX_PATH) == 0) {
+        return;
+    }
+    const std::wstring path = std::wstring(folder) + L"\\easy-control\\gamepad-service.log";
+
+    std::lock_guard<std::mutex> lock(logMutex);
+    WIN32_FILE_ATTRIBUTE_DATA attributes;
+    if (GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &attributes) &&
+            (((LONGLONG)attributes.nFileSizeHigh << 32) | attributes.nFileSizeLow) > LOG_MAX_BYTES) {
+        MoveFileExW(path.c_str(), (path + L".old").c_str(), MOVEFILE_REPLACE_EXISTING);
+    }
+    HANDLE file = CreateFileW(path.c_str(), FILE_APPEND_DATA, FILE_SHARE_READ, NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (file == INVALID_HANDLE_VALUE) {
+        return;
+    }
+    SYSTEMTIME now;
+    GetLocalTime(&now);
+    wchar_t stamped[600];
+    swprintf_s(stamped, L"%04u-%02u-%02u %02u:%02u:%02u  %s\r\n",
+        now.wYear, now.wMonth, now.wDay, now.wHour, now.wMinute, now.wSecond, line);
+    char utf8[1800];
+    const int length = WideCharToMultiByte(CP_UTF8, 0, stamped, -1, utf8, sizeof(utf8), NULL, NULL);
+    if (length > 1) {
+        DWORD written = 0;
+        WriteFile(file, utf8, (DWORD)(length - 1), &written, NULL);
+    }
+    CloseHandle(file);
+}
+
+// to the log file and the debugger, and the console when run in one
 static void Log(const wchar_t* format, ...)
 {
     wchar_t line[512];
@@ -50,6 +88,7 @@ static void Log(const wchar_t* format, ...)
     }
     OutputDebugStringW(line);
     OutputDebugStringW(L"\n");
+    AppendToLogFile(line);
 }
 
 
@@ -362,6 +401,7 @@ static VOID WINAPI ServiceMain(DWORD argc, LPWSTR* argv)
         return;
     }
     ReportStatus(SERVICE_RUNNING);
+    Log(L"started, version %d", EASYCONTROL_PAD_VERSION);
     RunPipeServer();
     // pads still plugged in go when the process ends, as their handles close
     ReportStatus(SERVICE_STOPPED);

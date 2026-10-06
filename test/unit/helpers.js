@@ -12,7 +12,10 @@ const require = createRequire(import.meta.url);
 
 // the module as a CommonJS user gets it, through the dist loader
 export const Control = require(path.join(distPath, "easy-control.cjs"));
-export const { Mouse, Keyboard, Gamepad, Screen } = Control;
+export const { Mouse, Keyboard, Gamepad, Screen, Platform } = Control;
+
+// input tests need the permission to send input (macOS Accessibility, ...)
+export const skipNoInputAccess = !Platform.hasInputAccess() && "no permission to send input here (Platform.hasInputAccess())";
 
 // Linux sessions where the X11 calls go through XWayland or are missing
 export const isWayland = os.platform() === "linux" && (

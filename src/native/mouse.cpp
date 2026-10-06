@@ -4,6 +4,8 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <mutex>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -21,16 +23,39 @@
 #endif
 
 
-// the cursor picture handed to JS: RGBA, a byte per channel, row by row from the top
+// the cursor picture: RGBA, a byte per channel, row by row from the top, in
+// physical pixels; empty while the pointer is hidden
 struct CursorPicture {
     int width = 0;
     int height = 0;
     int xOffset = 0;
     int yOffset = 0;
     std::vector<uint8_t> rgba;
+    // the colour channels are multiplied by alpha, as XFixes and AppKit give them
+    bool isPremultiplied = false;
 };
 
-static Napi::Object CursorToObject(Napi::Env env, const CursorPicture& picture) {
+// What JS gets is the same on every platform: straight (not premultiplied)
+// alpha, and fully transparent pixels black, whatever colour the system left
+// in them.
+static void NormalizeAlpha(CursorPicture& picture) {
+    for (size_t i = 0; i + 3 < picture.rgba.size(); i += 4) {
+        uint8_t* pixel = &picture.rgba[i];
+        const unsigned int alpha = pixel[3];
+        if (alpha == 0) {
+            pixel[0] = pixel[1] = pixel[2] = 0;
+        } else if (picture.isPremultiplied && alpha < 255) {
+            for (int c = 0; c < 3; c++) {
+                const unsigned int value = (pixel[c] * 255u + alpha / 2) / alpha;
+                pixel[c] = (uint8_t)(value > 255 ? 255 : value);
+            }
+        }
+    }
+    picture.isPremultiplied = false;
+}
+
+static Napi::Object CursorToObject(Napi::Env env, CursorPicture picture) {
+    NormalizeAlpha(picture);
     Napi::Uint8Array data = Napi::Uint8Array::New(env, picture.rgba.size());
     if (!picture.rgba.empty()) {
         memcpy(data.Data(), picture.rgba.data(), picture.rgba.size());
@@ -85,8 +110,8 @@ static bool ParseScroll(const Napi::CallbackInfo& info, int& amount, bool& isHor
         Napi::TypeError::New(env, "Expected 2 argument").ThrowAsJavaScriptException();
         return false;
     }
-    if (!info[0].IsNumber()) {
-        Napi::TypeError::New(env, "Expected number in 1st argument").ThrowAsJavaScriptException();
+    if (!info[0].IsNumber() || !std::isfinite(info[0].As<Napi::Number>().DoubleValue())) {
+        Napi::TypeError::New(env, "Expected finite number in 1st argument").ThrowAsJavaScriptException();
         return false;
     }
     if (!info[1].IsBoolean()) {
@@ -276,10 +301,11 @@ Napi::Number Mouse::getY(const Napi::CallbackInfo& info) {
 // is none to read, e.g. the pointer is hidden
 static bool ReadCursor(CursorPicture& picture) {
     #if defined(IS_WINDOWS)
-        // Get information about the global cursor.
+        // Get information about the global cursor; none while it is hidden,
+        // as getIconId() says then
         CURSORINFO ci;
         ci.cbSize = sizeof(ci);
-        if (!GetCursorInfo(&ci) || ci.hCursor == NULL) {
+        if (!GetCursorInfo(&ci) || !(ci.flags & CURSOR_SHOWING) || ci.hCursor == NULL) {
             return false;
         }
 
@@ -414,14 +440,27 @@ static bool ReadCursor(CursorPicture& picture) {
             return false;
         }
 
+        // the image's size is in points; it is drawn in the pixels of the
+        // screen under the pointer (2 per point on Retina), as that shows it
         NSSize size = [image size];
-        int width = (int)size.width;
-        int height = (int)size.height;
+        if (size.width <= 0 || size.height <= 0) {
+            return false;
+        }
+        CGFloat scale = 1.0;
+        const NSPoint pointer = [NSEvent mouseLocation];
+        for (NSScreen *screen in [NSScreen screens]) {
+            if (NSPointInRect(pointer, screen.frame)) {
+                scale = screen.backingScaleFactor;
+                break;
+            }
+        }
+        const int width = (int)std::lround(size.width * scale);
+        const int height = (int)std::lround(size.height * scale);
         if (width <= 0 || height <= 0) {
             return false;
         }
 
-        // Create a bitmap representation
+        // Create a bitmap representation, sized in points so drawing scales
         NSBitmapImageRep *bitmap = [[NSBitmapImageRep alloc]
             initWithBitmapDataPlanes:NULL
             pixelsWide:width
@@ -436,23 +475,25 @@ static bool ReadCursor(CursorPicture& picture) {
         if (bitmap == nil) {
             return false;
         }
+        [bitmap setSize:size];
 
         // Draw the image into the bitmap
         [NSGraphicsContext saveGraphicsState];
         [NSGraphicsContext setCurrentContext:[NSGraphicsContext graphicsContextWithBitmapImageRep:bitmap]];
-        [image drawInRect:NSMakeRect(0, 0, width, height)];
+        [image drawInRect:NSMakeRect(0, 0, size.width, size.height)];
         [NSGraphicsContext restoreGraphicsState];
 
-        // Pixel data is already RGBA, row by row from the top
+        // RGBA, row by row from the top, alpha premultiplied (AppKit draws so)
         unsigned char *bitmapData = [bitmap bitmapData];
         if (bitmapData == NULL) {
             return false;
         }
         picture.rgba.assign(bitmapData, bitmapData + (size_t)width * height * 4);
+        picture.isPremultiplied = true;
         picture.width = width;
         picture.height = height;
-        picture.xOffset = (int)hotspot.x;
-        picture.yOffset = (int)hotspot.y;
+        picture.xOffset = (int)std::lround(hotspot.x * scale);
+        picture.yOffset = (int)std::lround(hotspot.y * scale);
         return true;
 
     #elif defined(IS_LINUX)
@@ -472,7 +513,8 @@ static bool ReadCursor(CursorPicture& picture) {
         picture.rgba.resize((size_t)width * height * 4);
         uint8_t* out = picture.rgba.data();
 
-        // XFixes cursor pixels are ARGB, one per unsigned long
+        // XFixes cursor pixels are ARGB, alpha premultiplied, one per unsigned long
+        picture.isPremultiplied = true;
         for (int i = 0; i < width * height; i++) {
             unsigned long pixel = cursorImage->pixels[i];
             out[i * 4 + 0] = (uint8_t)((pixel >> 16) & 0xFF); // R
@@ -610,13 +652,13 @@ void Mouse::setPosition(const Napi::CallbackInfo& info) {
 }
 
 
-static void PressButton(const Napi::CallbackInfo& info, bool isDown) {
-    Napi::Env env = info.Env();
-    std::string button;
-    if (!ParseButton(info, button)) {
-        return;
-    }
+// buttons pressed through buttonDown and not released yet, so releaseAll can
+// let them go (shared by every JS environment of the process)
+static std::mutex pressedButtonsMutex;
+static std::set<std::string> pressedButtons;
 
+// presses or releases a button ("left", ...); false, after throwing, when it fails
+static bool SendButton(Napi::Env env, const std::string& button, bool isDown) {
     #if defined(IS_WINDOWS)
         INPUT input = {0};
         input.type = INPUT_MOUSE;
@@ -662,7 +704,7 @@ static void PressButton(const Napi::CallbackInfo& info, bool isDown) {
         CGEventRef mouseEvent = CGEventCreateMouseEvent(EventSource(), eventType, cursor, mouseButton);
         if (mouseEvent == NULL) {
             Napi::Error::New(env, "Failed to create mouse event").ThrowAsJavaScriptException();
-            return;
+            return false;
         }
         CGEventSetFlags(mouseEvent, ModifierFlags());
         CGEventPost(kCGHIDEventTap, mouseEvent);
@@ -687,12 +729,13 @@ static void PressButton(const Napi::CallbackInfo& info, bool isDown) {
                 code = BTN_EXTRA;
             }
             std::string error;
-            ThrowIfFailed(env, VirtualInput::PointerButton(code, isDown, error), error);
-            return;
+            const bool isDone = VirtualInput::PointerButton(code, isDown, error);
+            ThrowIfFailed(env, isDone, error);
+            return isDone;
         }
         Display *display = RequireDisplay(env);
         if (display == NULL) {
-            return;
+            return false;
         }
 
         unsigned int xButton = Button1;
@@ -709,6 +752,35 @@ static void PressButton(const Napi::CallbackInfo& info, bool isDown) {
         XTestFakeButtonEvent(display, xButton, isDown ? True : False, CurrentTime);
         XFlush(display);
     #endif
+    return true;
+}
+
+static void PressButton(const Napi::CallbackInfo& info, bool isDown) {
+    std::string button;
+    if (!ParseButton(info, button) || !SendButton(info.Env(), button, isDown)) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(pressedButtonsMutex);
+    if (isDown) {
+        pressedButtons.insert(button);
+    } else {
+        pressedButtons.erase(button);
+    }
+}
+
+// Mouse.releaseAll(): releases every button buttonDown pressed and buttonUp did
+// not release yet, e.g. when the remote side of a session is gone
+void Mouse::releaseAll(const Napi::CallbackInfo& info) {
+    std::set<std::string> buttons;
+    {
+        std::lock_guard<std::mutex> lock(pressedButtonsMutex);
+        buttons.swap(pressedButtons);
+    }
+    for (const std::string& button : buttons) {
+        if (!SendButton(info.Env(), button, false)) {
+            return;
+        }
+    }
 }
 
 void Mouse::buttonDown(const Napi::CallbackInfo& info) {
@@ -760,11 +832,12 @@ static void Scroll(const Napi::CallbackInfo& info, bool isForward) {
         CFRelease(scrollEvent);
 
     #elif defined(IS_LINUX)
+        if (amount == 0) {
+            return;
+        }
         if (IsWaylandSession()) {
-            if (amount <= 0) {
-                return;
-            }
-            // REL_WHEEL counts up as positive, REL_HWHEEL right
+            // REL_WHEEL counts up as positive, REL_HWHEEL right; a negative
+            // amount goes the other way
             std::string error;
             const bool isDone = isHorizontal
                 ? VirtualInput::PointerScroll(REL_HWHEEL, isForward ? amount : -amount, error)
@@ -777,7 +850,12 @@ static void Scroll(const Napi::CallbackInfo& info, bool isForward) {
             return;
         }
 
-        // buttons 4/5 scroll up/down, 6/7 left/right
+        // buttons 4/5 scroll up/down, 6/7 left/right; a negative amount is
+        // that many notches the other way
+        if (amount < 0) {
+            isForward = !isForward;
+            amount = -amount;
+        }
         unsigned int button = isHorizontal ? (isForward ? 7 : 6) : (isForward ? 5 : 4);
 
         // Simulate multiple scroll events based on amount
@@ -813,6 +891,7 @@ Napi::Object Mouse::Init(Napi::Env env, Napi::Object exports) {
 
     obj.Set(Napi::String::New(env, "buttonDown"), Napi::Function::New(env, Mouse::buttonDown));
     obj.Set(Napi::String::New(env, "buttonUp"), Napi::Function::New(env, Mouse::buttonUp));
+    obj.Set(Napi::String::New(env, "releaseAll"), Napi::Function::New(env, Mouse::releaseAll));
 
     obj.Set(Napi::String::New(env, "scrollDown"), Napi::Function::New(env, Mouse::scrollDown));
     obj.Set(Napi::String::New(env, "scrollUp"), Napi::Function::New(env, Mouse::scrollUp));

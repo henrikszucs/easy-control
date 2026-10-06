@@ -3,6 +3,7 @@
 #define WAYLAND_H
 
 #if defined(IS_LINUX)
+    #include <string>
     #include <vector>
 
     // Whether input goes through the Wayland path (uinput) rather than X11
@@ -18,6 +19,8 @@
         int height;
         double scaleFactor;
         bool isPrimary;
+        std::string id;     // the output name ("HDMI-A-1", ...)
+        std::string name;   // the monitor model, or the compositor description
     };
 
     // The compositor's outputs, read over the Wayland protocol (wl_output and

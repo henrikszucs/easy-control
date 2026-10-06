@@ -1,15 +1,20 @@
 #include "screen.h"
 #include "platform.h"
 
+#include <algorithm>
+#include <string>
 #include <vector>
 
 #if defined(IS_WINDOWS)
+    #include "screen_layout.h"
     #include <cmath>
+    #include <map>
     #include <shellscalingapi.h>
     #pragma comment(lib, "Shcore.lib")
 #elif defined(IS_MACOS)
     #include <ApplicationServices/ApplicationServices.h>
     #include <CoreGraphics/CoreGraphics.h>
+    #import <AppKit/AppKit.h>
 #elif defined(IS_LINUX)
     #include "wayland.h"
     #include <X11/Xlib.h>
@@ -26,7 +31,6 @@ struct LogicalMonitor {
     LONG y;
     LONG width;
     LONG height;
-    bool isPlaced;
 };
 
 static double MonitorScale(HMONITOR hMonitor) {
@@ -44,16 +48,55 @@ static double MonitorScale(HMONITOR hMonitor) {
 static BOOL CALLBACK MonitorEnumProc(HMONITOR hMonitor, HDC hdcMonitor, LPRECT lprcMonitor, LPARAM dwData) {
     std::vector<MonitorLayout>* monitors = reinterpret_cast<std::vector<MonitorLayout>*>(dwData);
 
-    MONITORINFO monitorInfo;
-    monitorInfo.cbSize = sizeof(MONITORINFO);
-    if (GetMonitorInfo(hMonitor, &monitorInfo)) {
+    MONITORINFOEXW monitorInfo;
+    monitorInfo.cbSize = sizeof(MONITORINFOEXW);
+    if (GetMonitorInfoW(hMonitor, &monitorInfo)) {
         MonitorLayout monitor;
         monitor.rect = monitorInfo.rcMonitor;
+        monitor.device = monitorInfo.szDevice;
         monitor.scaleFactor = MonitorScale(hMonitor);
         monitor.isPrimary = (monitorInfo.dwFlags & MONITORINFOF_PRIMARY) != 0;
         monitors->push_back(monitor);
     }
     return TRUE; // Continue enumeration
+}
+
+// the monitors' names for people ("DELL U2720Q"), by GDI device name, from
+// the display configuration; a built-in panel often has none
+static std::map<std::wstring, std::wstring> MonitorNames() {
+    std::map<std::wstring, std::wstring> names;
+    UINT32 pathCount = 0;
+    UINT32 modeCount = 0;
+    if (GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &pathCount, &modeCount) != ERROR_SUCCESS) {
+        return names;
+    }
+    std::vector<DISPLAYCONFIG_PATH_INFO> paths(pathCount);
+    std::vector<DISPLAYCONFIG_MODE_INFO> modes(modeCount);
+    if (QueryDisplayConfig(QDC_ONLY_ACTIVE_PATHS, &pathCount, paths.data(), &modeCount, modes.data(), nullptr) != ERROR_SUCCESS) {
+        return names;
+    }
+    for (UINT32 i = 0; i < pathCount; i++) {
+        DISPLAYCONFIG_SOURCE_DEVICE_NAME source = {};
+        source.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME;
+        source.header.size = sizeof(source);
+        source.header.adapterId = paths[i].sourceInfo.adapterId;
+        source.header.id = paths[i].sourceInfo.id;
+        DISPLAYCONFIG_TARGET_DEVICE_NAME target = {};
+        target.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_NAME;
+        target.header.size = sizeof(target);
+        target.header.adapterId = paths[i].targetInfo.adapterId;
+        target.header.id = paths[i].targetInfo.id;
+        // a mirrored screen shows on several monitors: the first names it
+        if (DisplayConfigGetDeviceInfo(&source.header) == ERROR_SUCCESS &&
+            DisplayConfigGetDeviceInfo(&target.header) == ERROR_SUCCESS) {
+            names.emplace(source.viewGdiDeviceName, target.monitorFriendlyDeviceName);
+        }
+    }
+    return names;
+}
+
+static Napi::String WideString(Napi::Env env, const std::wstring& text) {
+    return Napi::String::New(env, std::u16string(text.begin(), text.end()));
 }
 
 std::vector<MonitorLayout> ListMonitors() {
@@ -62,81 +105,25 @@ std::vector<MonitorLayout> ListMonitors() {
     return monitors;
 }
 
-// Lay the monitors out in logical pixels. Dividing every physical rectangle by
-// its own monitor's scale would make monitors of different scales overlap (and
-// leave gaps), so, as Chromium does for Electron's screen API, the primary
-// monitor is placed first and every monitor touching a placed one is put
-// against it: its logical edge on the placed one's, its offset along that edge
-// scaled by the placed one's factor. A monitor touching none falls back to its
-// physical origin divided by its own scale.
+// Lay the monitors out in logical pixels, as Electron's screen API does
+// (screen_layout.h): the primary monitor first, every monitor touching a
+// placed one put against it.
 static std::vector<LogicalMonitor> LayoutMonitors() {
     std::vector<LogicalMonitor> monitors;
+    std::vector<ScreenLayout::PhysicalMonitor> physical;
     for (const MonitorLayout& layout : ListMonitors()) {
         LogicalMonitor monitor;
         monitor.layout = layout;
-        monitor.width = std::lround((layout.rect.right - layout.rect.left) / layout.scaleFactor);
-        monitor.height = std::lround((layout.rect.bottom - layout.rect.top) / layout.scaleFactor);
-        monitor.x = 0;
-        monitor.y = 0;
-        monitor.isPlaced = false;
         monitors.push_back(monitor);
+        physical.push_back({ layout.rect.left, layout.rect.top, layout.rect.right, layout.rect.bottom,
+            (float)layout.scaleFactor });
     }
-    if (monitors.empty()) {
-        return monitors;
-    }
-
-    size_t primary = 0;
+    const std::vector<ScreenLayout::LogicalRect> rects = ScreenLayout::Layout(physical);
     for (size_t i = 0; i < monitors.size(); i++) {
-        if (monitors[i].layout.isPrimary) {
-            primary = i;
-            break;
-        }
-    }
-
-    const auto placeAtOrigin = [](LogicalMonitor& monitor) {
-        monitor.x = std::lround(monitor.layout.rect.left / monitor.layout.scaleFactor);
-        monitor.y = std::lround(monitor.layout.rect.top / monitor.layout.scaleFactor);
-        monitor.isPlaced = true;
-    };
-    placeAtOrigin(monitors[primary]);
-
-    std::vector<size_t> queue = {primary};
-    for (size_t q = 0; q < queue.size(); q++) {
-        const LogicalMonitor& parent = monitors[queue[q]];
-        const RECT& p = parent.layout.rect;
-        const double scale = parent.layout.scaleFactor;
-        for (size_t i = 0; i < monitors.size(); i++) {
-            LogicalMonitor& monitor = monitors[i];
-            if (monitor.isPlaced) {
-                continue;
-            }
-            const RECT& m = monitor.layout.rect;
-            const bool isRowOverlap = m.top < p.bottom && m.bottom > p.top;
-            const bool isColumnOverlap = m.left < p.right && m.right > p.left;
-            if (isRowOverlap && m.left == p.right) {
-                monitor.x = parent.x + parent.width;
-                monitor.y = parent.y + std::lround((m.top - p.top) / scale);
-            } else if (isRowOverlap && m.right == p.left) {
-                monitor.x = parent.x - monitor.width;
-                monitor.y = parent.y + std::lround((m.top - p.top) / scale);
-            } else if (isColumnOverlap && m.top == p.bottom) {
-                monitor.x = parent.x + std::lround((m.left - p.left) / scale);
-                monitor.y = parent.y + parent.height;
-            } else if (isColumnOverlap && m.bottom == p.top) {
-                monitor.x = parent.x + std::lround((m.left - p.left) / scale);
-                monitor.y = parent.y - monitor.height;
-            } else {
-                continue;
-            }
-            monitor.isPlaced = true;
-            queue.push_back(i);
-        }
-    }
-
-    for (LogicalMonitor& monitor : monitors) {
-        if (!monitor.isPlaced) {
-            placeAtOrigin(monitor);
-        }
+        monitors[i].x = rects[i].x;
+        monitors[i].y = rects[i].y;
+        monitors[i].width = rects[i].width;
+        monitors[i].height = rects[i].height;
     }
     return monitors;
 }
@@ -204,6 +191,39 @@ POINT LogicalToPhysical(double x, double y) {
 #endif
 
 #if defined(IS_LINUX)
+// the monitor name an output's EDID gives ("DELL U2720Q"), "" when none
+static std::string EdidMonitorName(Display* display, RROutput output) {
+    const Atom edidAtom = XInternAtom(display, RR_PROPERTY_RANDR_EDID, True);
+    if (edidAtom == None) {
+        return "";
+    }
+    Atom type;
+    int format = 0;
+    unsigned long count = 0;
+    unsigned long remaining = 0;
+    unsigned char* edid = nullptr;
+    std::string name;
+    if (XRRGetOutputProperty(display, output, edidAtom, 0, 64, False, False, AnyPropertyType,
+            &type, &format, &count, &remaining, &edid) == Success && edid != nullptr && format == 8 && count >= 128) {
+        // four 18-byte descriptors from byte 54; type 0xFC is the monitor name,
+        // up to 13 characters ended by a line feed
+        for (int offset = 54; offset <= 108 && name.empty(); offset += 18) {
+            if (edid[offset] == 0 && edid[offset + 1] == 0 && edid[offset + 3] == 0xFC) {
+                for (int i = 5; i < 18 && edid[offset + i] != 0x0A; i++) {
+                    name += (char)edid[offset + i];
+                }
+                while (!name.empty() && name.back() == ' ') {
+                    name.pop_back();
+                }
+            }
+        }
+    }
+    if (edid != nullptr) {
+        XFree(edid);
+    }
+    return name;
+}
+
 // the screens as XRandR reports them. X11 has no logical coordinate space: the
 // mouse and the screens are both in pixels, so the scale factor is 1.0 - a
 // desktop's own UI scaling (GDK_SCALE, Xft.dpi, ...) does not change them.
@@ -242,6 +262,8 @@ static std::vector<ScreenRect> ListXScreens() {
                         screen.height = (int)crtcInfo->height;
                         screen.scaleFactor = 1.0;
                         screen.isPrimary = (screenRes->outputs[i] == primary);
+                        screen.id = std::string(outputInfo->name, outputInfo->nameLen);
+                        screen.name = EdidMonitorName(display, screenRes->outputs[i]);
                         screens.push_back(screen);
                         XRRFreeCrtcInfo(crtcInfo);
                     }
@@ -254,6 +276,18 @@ static std::vector<ScreenRect> ListXScreens() {
         }
     }
 
+    // no output set as primary (Xvfb, some minimal desktops): the one at the
+    // origin stands for it, as on Wayland
+    const bool hasPrimary = std::any_of(screens.begin(), screens.end(), [](const ScreenRect& screen) {
+        return screen.isPrimary;
+    });
+    if (!screens.empty() && !hasPrimary) {
+        auto origin = std::find_if(screens.begin(), screens.end(), [](const ScreenRect& screen) {
+            return screen.x == 0 && screen.y == 0;
+        });
+        (origin != screens.end() ? *origin : screens.front()).isPrimary = true;
+    }
+
     if (screens.empty()) {
         // Fallback: Single screen without XRandR
         int screenNumber = DefaultScreen(display);
@@ -264,6 +298,8 @@ static std::vector<ScreenRect> ListXScreens() {
         screen.height = DisplayHeight(display, screenNumber);
         screen.scaleFactor = 1.0;
         screen.isPrimary = true;
+        screen.id = "default";
+        screen.name = "";
         screens.push_back(screen);
     }
     return screens;
@@ -277,7 +313,8 @@ std::vector<ScreenRect> ListScreens() {
         if (ListWaylandOutputs(outputs)) {
             std::vector<ScreenRect> screens;
             for (const WaylandOutput& output : outputs) {
-                screens.push_back({output.x, output.y, output.width, output.height, output.scaleFactor, output.isPrimary});
+                screens.push_back({output.x, output.y, output.width, output.height, output.scaleFactor, output.isPrimary,
+                    output.id, output.name});
             }
             return screens;
         }
@@ -294,9 +331,14 @@ Napi::Array IScreen::list(const Napi::CallbackInfo& info) {
     #if defined(IS_WINDOWS)
         DpiScope dpiScope;
         std::vector<LogicalMonitor> monitors = LayoutMonitors();
+        const std::map<std::wstring, std::wstring> names = MonitorNames();
 
         for (uint32_t i = 0; i < (uint32_t)monitors.size(); i++) {
             Napi::Object screenObj = Napi::Object::New(env);
+            const std::wstring& device = monitors[i].layout.device;
+            const auto name = names.find(device);
+            screenObj.Set("id", WideString(env, device));
+            screenObj.Set("name", WideString(env, name != names.end() ? name->second : std::wstring()));
             screenObj.Set("isPrimary", Napi::Boolean::New(env, monitors[i].layout.isPrimary));
             screenObj.Set("width", Napi::Number::New(env, monitors[i].width));
             screenObj.Set("height", Napi::Number::New(env, monitors[i].height));
@@ -339,6 +381,22 @@ Napi::Array IScreen::list(const Napi::CallbackInfo& info) {
                     CGDisplayModeRelease(mode);
                 }
 
+                // the name System Settings shows, from the NSScreen of the display
+                std::string name;
+                for (NSScreen* screen in [NSScreen screens]) {
+                    NSNumber* number = screen.deviceDescription[@"NSScreenNumber"];
+                    if (number != nil && number.unsignedIntValue == display) {
+                        if (@available(macOS 10.15, *)) {
+                            if (screen.localizedName != nil) {
+                                name = [screen.localizedName UTF8String];
+                            }
+                        }
+                        break;
+                    }
+                }
+
+                screenObj.Set("id", Napi::String::New(env, std::to_string(display)));
+                screenObj.Set("name", Napi::String::New(env, name));
                 screenObj.Set("isPrimary", Napi::Boolean::New(env, isPrimary));
                 screenObj.Set("width", Napi::Number::New(env, (int)bounds.size.width));
                 screenObj.Set("height", Napi::Number::New(env, (int)bounds.size.height));
@@ -354,6 +412,8 @@ Napi::Array IScreen::list(const Napi::CallbackInfo& info) {
         std::vector<ScreenRect> screens = ListScreens();
         for (uint32_t i = 0; i < (uint32_t)screens.size(); i++) {
             Napi::Object screenObj = Napi::Object::New(env);
+            screenObj.Set("id", Napi::String::New(env, screens[i].id));
+            screenObj.Set("name", Napi::String::New(env, screens[i].name));
             screenObj.Set("isPrimary", Napi::Boolean::New(env, screens[i].isPrimary));
             screenObj.Set("width", Napi::Number::New(env, screens[i].width));
             screenObj.Set("height", Napi::Number::New(env, screens[i].height));

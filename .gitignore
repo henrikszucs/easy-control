@@ -1,9 +1,11 @@
 node_modules/
-package-lock.json
 build/
-.vscode/
-dev/test/*
-!dev/test/resources/
 build_swift/
-tmp/
 build_wdk/
+tmp/
+.vscode/
+
+# keys and certificates never go into git
+*.key
+*.pfx
+*.p12

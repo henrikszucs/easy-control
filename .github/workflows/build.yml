@@ -1,0 +1,149 @@
+# Builds the addon for every target, tests it, and - when run by hand with
+# update-dist - opens a pull request that puts the builds into dist/, so the
+# binaries in git always come from here.
+
+name: build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      update-dist:
+        description: Open a pull request that updates dist/ with these builds
+        type: boolean
+        default: false
+
+env:
+  # the Electron binary is only needed by the e2e tests, which do not run here
+  ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm ci
+      - name: Build the addon (x64 and ARM64) and the gamepad driver
+        run: |
+          npm run build
+          npm run build -- --arch arm64
+          npm run build:gamepad
+      - run: npm test
+      # hosted runners run as administrator without UAC prompts, so the
+      # driver can be installed and its tests run unattended
+      - run: npm run test:driver
+      - name: Gamepad tests with the driver installed
+        run: |
+          node -e "require('./dist/easy-control.cjs').Gamepad.installDriver().then(() => console.log('installed'))"
+          npm test
+      - uses: actions/upload-artifact@v4
+        with:
+          name: win32-x64
+          path: dist/win32-x64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: win32-arm64
+          path: dist/win32-arm64
+
+  windows-arm:
+    needs: windows
+    runs-on: windows-11-arm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm ci
+      - uses: actions/download-artifact@v4
+        with:
+          name: win32-arm64
+          path: dist/win32-arm64
+      - run: npm test
+      - run: npm run test:driver
+      - name: Gamepad tests with the driver installed
+        run: |
+          node -e "require('./dist/easy-control.cjs').Gamepad.installDriver().then(() => console.log('installed'))"
+          npm test
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm ci
+      - name: Build the addon (ARM64, and x64 cross-built)
+        run: |
+          npm run build -- --arch x64
+          npm run build
+      - run: npm test
+      - uses: actions/upload-artifact@v4
+        with:
+          name: darwin-arm64
+          path: dist/darwin-arm64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: darwin-x64
+          path: dist/darwin-x64
+
+  linux:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: ubuntu-latest, target: linux-x64, node: 24, upload: true }
+          - { runner: ubuntu-latest, target: linux-x64, node: 22, upload: false }
+          - { runner: ubuntu-24.04-arm, target: linux-arm64, node: 24, upload: true }
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - name: Install the X11 libraries and Xvfb
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libx11-dev libxtst-dev libxfixes-dev libxrandr-dev libxkbcommon0 xvfb xauth x11-xkb-utils
+      - run: npm ci
+      - run: npm run build
+      - name: Test under Xvfb (X11)
+        # nothing else has the keyboard here, so the typing tests may type
+        env:
+          EASYCONTROL_TYPING_TEST: "1"
+        run: xvfb-run -a -s "-screen 0 1280x1024x24" npm test
+      - if: matrix.upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: dist/${{ matrix.target }}
+
+  update-dist:
+    if: github.event_name == 'workflow_dispatch' && inputs.update-dist
+    needs: [windows, windows-arm, macos, linux]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+      - run: npm ci
+      - name: Rebuild the JS loaders
+        run: npm run build:js
+      - uses: peter-evans/create-pull-request@v7
+        with:
+          branch: ci/update-dist
+          title: Update dist/ with the CI builds
+          commit-message: "dist: builds from CI run ${{ github.run_id }}"
+          body: Builds of every target from run ${{ github.run_id }}, which built and tested them.
+          add-paths: dist/**

@@ -9,6 +9,7 @@
         #define WIN32_LEAN_AND_MEAN 1
     #endif
     #include <windows.h>
+    #include <string>
     #include <vector>
 
     // Runs the enclosed Win32 calls per-monitor DPI aware, so every coordinate
@@ -46,6 +47,7 @@
     // physical rectangle divided by that monitor's own scale.
     struct MonitorLayout {
         RECT rect;
+        std::wstring device;    // the GDI device name, "\\.\DISPLAY1"
         double scaleFactor;
         bool isPrimary;
     };
@@ -85,6 +87,7 @@
 
 #elif defined(IS_LINUX)
     #include <X11/Xlib.h>
+    #include <string>
     #include <vector>
 
     // A screen in the coordinates Mouse and Screen use: the compositor's
@@ -96,6 +99,8 @@
         int height;
         double scaleFactor;
         bool isPrimary;
+        std::string id;     // the output name ("HDMI-1", ...)
+        std::string name;   // the monitor name for people, "" when unknown
     };
 
     // every screen; from the Wayland compositor in a Wayland session (when it
