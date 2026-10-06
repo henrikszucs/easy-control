@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.11.0
+
+The first release whose builds of every target come from CI and pass its tests: 0.10.0's macOS and Linux builds
+in `dist/` were from before it, and its macOS sources did not compile.
+
+### Added
+
+- Builds for macOS on Intel (`darwin-x64`) and Linux on ARM (`linux-arm64`); all six builds in `dist/` are now
+  made and tested by CI.
+
+### Fixed
+
+- macOS: the addon builds again (the Swift part used macOS 26 types outside availability checks once built for
+  macOS 10.15, the oldest it supports).
+- macOS `Keyboard.isKeySupported("KeyA")` was false: the A key's code is 0, which counted as "no key".
+- macOS `Mouse.getX`/`getY` right after a move read the previous position; the pointer is now there at once.
+- Windows Server editions, which lack Microsoft's `xinputhid` filter: the virtual gamepad starts there and works
+  for XInput (not for Windows.Gaming.Input); before, it did not start.
+- `Gamepad.uninstallDriver()` left the HID collections of removed gamepads behind as phantom devices.
+
+### Other
+
+- CI shows why a step failed in an annotation, readable without signing in; it uses Node 24 actions.
+
 ## 0.10.0
 
 ### Breaking
@@ -7,7 +31,7 @@
 - **Windows gamepad**: easy-control's own driver replaces ViGEmBus, which was retired in 2023. It is installed once
   per machine with `Gamepad.installDriver()` (one UAC prompt); until then `Gamepad.create()` rejects with
   `code: "EASYCONTROL_DRIVER_MISSING"`. ViGEmBus is no longer used and can be uninstalled. Windows 10 1903 or later,
-  x64 and ARM64; on Windows Server editions, which lack Microsoft's `xinputhid` filter, XInput only.
+  x64 and ARM64.
 - **`Gamepad.create()` returns a Promise** on every platform: plugging a gamepad in takes a moment, which no longer
   blocks the event loop. Its errors carry a `code`.
 - **Node 22 or later** (`engines`); Electron 21 or later.
@@ -38,8 +62,6 @@
 - Linux `Mouse.scrollDown`/`scrollUp` with a negative amount scroll the other way, as on Windows and macOS; a
   non-finite amount throws a `TypeError` everywhere instead of scrolling 0.
 - Linux X11: when no output is set as primary (Xvfb, some desktops), the screen at 0,0 is reported primary.
-- macOS `Keyboard.isKeySupported("KeyA")` was false: the A key's code is 0, which counted as "no key".
-- macOS `Mouse.getX`/`getY` right after a move read the previous position; the pointer is now there at once.
 - A build older than its loader is reported in `Platform.loadError` instead of failing on first use.
 
 ### Other
