@@ -13,6 +13,7 @@ class Keyboard {
         static Napi::Boolean isKeySupported(const Napi::CallbackInfo& info);
         
         static void type(const Napi::CallbackInfo& info);
+        static Napi::Value getLockState(const Napi::CallbackInfo& info);
 
         static Napi::String GetLayout(const Napi::CallbackInfo& info);
         static void SetLayout(const Napi::CallbackInfo& info);

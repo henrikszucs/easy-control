@@ -90,6 +90,8 @@ jobs:
         with:
           name: win32-arm64
           path: dist/win32-arm64
+      # the loaders of these sources, not the ones last committed to dist/
+      - run: npm run build:js
       - name: Test
         run: |
           set -o pipefail
@@ -168,10 +170,19 @@ jobs:
         run: |
           set -o pipefail
           npm run build 2>&1 | tee logs/build.log
+      - name: Let the tests make virtual devices (uinput) and rumble the gamepad
+        run: |
+          sudo modprobe uinput
+          echo 'KERNEL=="uinput", MODE="0666"' | sudo tee /etc/udev/rules.d/99-easy-control-test.rules
+          echo 'KERNEL=="event*", ATTRS{name}=="Virtual Xbox 360 Controller", MODE="0666"' | sudo tee -a /etc/udev/rules.d/99-easy-control-test.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger
+          sudo chmod 0666 /dev/uinput
       - name: Test under Xvfb (X11)
         # nothing else has the keyboard here, so the typing tests may type
         env:
           EASYCONTROL_TYPING_TEST: "1"
+          EASYCONTROL_RUMBLE_TEST: "1"
         run: |
           set -o pipefail
           { xvfb-run -a -s "-screen 0 1280x1024x24" npm test && npm run test:types && npm run test:native; } 2>&1 | tee logs/test.log

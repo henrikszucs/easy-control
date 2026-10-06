@@ -128,6 +128,50 @@ test("scrollDown and scrollUp need an amount and a direction flag", function() {
     }
 });
 
+test("scrollDown and scrollUp refuse more than 10000 notches", function() {
+    for (const fn of [Mouse.scrollDown, Mouse.scrollUp]) {
+        assert.throws(function() { fn(1e9, false); }, { "name": "RangeError", "message": /10000/ });
+        assert.throws(function() { fn(-10001, true); }, RangeError);
+    }
+});
+
+test("scroll needs two finite numbers of at most 10000 notches", function() {
+    assert.throws(function() { Mouse.scroll(); }, TypeError);
+    assert.throws(function() { Mouse.scroll(1); }, TypeError);
+    assert.throws(function() { Mouse.scroll(0, false); }, TypeError);
+    assert.throws(function() { Mouse.scroll(NaN, 0); }, { "name": "TypeError", "message": /finite/ });
+    assert.throws(function() { Mouse.scroll(0, 10001); }, { "name": "RangeError", "message": /10000/ });
+    // nothing to scroll: sends nothing
+    assert.equal(Mouse.scroll(0, 0), undefined);
+});
+
+test("moveBy needs two finite numbers of at most 100000 counts", function() {
+    assert.throws(function() { Mouse.moveBy(); }, TypeError);
+    assert.throws(function() { Mouse.moveBy(1); }, TypeError);
+    assert.throws(function() { Mouse.moveBy("1", 0); }, TypeError);
+    assert.throws(function() { Mouse.moveBy(Infinity, 0); }, { "name": "TypeError", "message": /finite/ });
+    assert.throws(function() { Mouse.moveBy(0, -100001); }, { "name": "RangeError", "message": /100000/ });
+});
+
+test("moveBy moves the pointer that way, fractions adding up", { "skip": skipNoInputAccess }, function() {
+    const primary = Screen.list().find(function(s) {
+        return s["isPrimary"];
+    });
+    const x0 = primary["x"] + primary["width"] / 2;
+    const y0 = primary["y"] + primary["height"] / 2;
+    Mouse.setPosition(x0, y0);
+    // the pointer speed and acceleration make the distance inexact: the sign is what is sure
+    Mouse.moveBy(20, -20);
+    assert.ok(Mouse.getX() > x0, "moved right");
+    assert.ok(Mouse.getY() < y0, "moved up");
+    Mouse.setPosition(x0, y0);
+    Mouse.moveBy(0.4, 0);
+    assertNear(Mouse.getX(), x0, pixelTolerance([primary]), "less than a count does not move");
+    Mouse.moveBy(0.4, 0);
+    Mouse.moveBy(0.4, 0);
+    assert.ok(Mouse.getX() > x0, "three fractions make a count");
+});
+
 test("releaseAll with no button down does nothing and throws nothing", function() {
     assert.equal(Mouse.releaseAll(), undefined);
     assert.equal(Mouse.releaseAll(), undefined);

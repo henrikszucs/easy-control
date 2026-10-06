@@ -46,10 +46,27 @@ test("keyDown and keyUp throw for an unsupported key, without sending anything",
     }
 });
 
-test("type rejects a missing, non-string or empty argument", function() {
+test("type rejects a missing or non-string argument, and an empty one types nothing", function() {
     assert.throws(function() { Keyboard.type(); }, TypeError);
     assert.throws(function() { Keyboard.type(1); }, TypeError);
-    assert.throws(function() { Keyboard.type(""); }, TypeError);
+    assert.equal(Keyboard.type(""), undefined);
+});
+
+test("getLockState tells which lock keys are on", function() {
+    const state = Keyboard.getLockState();
+    assert.deepEqual(Object.keys(state).sort(), ["capsLock", "numLock", "scrollLock"]);
+    for (const key of Object.keys(state)) {
+        assert.equal(typeof state[key], "boolean", key);
+    }
+    if (os.platform() === "darwin") {
+        assert.equal(state["numLock"], false);
+        assert.equal(state["scrollLock"], false);
+    }
+});
+
+test("getLayout and setLayout are GetLayout and SetLayout", function() {
+    assert.equal(Keyboard.getLayout, Keyboard.GetLayout);
+    assert.equal(Keyboard.setLayout, Keyboard.SetLayout);
 });
 
 test("GetLayout returns a non-empty layout name", function() {

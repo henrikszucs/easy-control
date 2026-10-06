@@ -21,11 +21,21 @@ for (const type of ["mousedown", "mouseup", "mousemove"]) {
             "type": type,
             "button": event.button,
             "buttons": event.buttons,
+            "detail": event.detail,
             "screenX": event.screenX,
-            "screenY": event.screenY
+            "screenY": event.screenY,
+            "movementX": event.movementX,
+            "movementY": event.movementY,
+            "isLocked": document.pointerLockElement !== null
         });
     }, true);
 }
+window.addEventListener("dblclick", function(event) {
+    report({ "type": "dblclick", "button": event.button });
+}, true);
+document.addEventListener("pointerlockchange", function() {
+    report({ "type": "pointerlockchange", "isLocked": document.pointerLockElement !== null });
+});
 window.addEventListener("auxclick", function(event) {
     event.preventDefault();
 });
@@ -88,6 +98,36 @@ globalThis.blurText = function() {
 
 globalThis.readText = function() {
     return text.value;
+};
+
+// pointer lock, as a game or a 3D page takes it (needs a user gesture: the
+// main process calls this with one)
+globalThis.lockPointer = function() {
+    const result = document.getElementById("pad").requestPointerLock();
+    return Promise.resolve(result).then(function() {
+        return true;
+    }, function(error) {
+        return String(error);
+    });
+};
+
+globalThis.unlockPointer = function() {
+    document.exitPointerLock();
+    return true;
+};
+
+// rumble on a pad, as a game does through the Gamepad API
+globalThis.playRumble = function(index, strong, weak, duration) {
+    const pad = navigator.getGamepads()[index];
+    if (!pad || !pad.vibrationActuator) {
+        return Promise.resolve("no vibrationActuator");
+    }
+    return pad.vibrationActuator.playEffect("dual-rumble", {
+        "startDelay": 0,
+        "duration": duration,
+        "strongMagnitude": strong,
+        "weakMagnitude": weak
+    }).then(String, String);
 };
 
 // the pads Chromium sees, as plain data

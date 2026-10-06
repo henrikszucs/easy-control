@@ -14,9 +14,10 @@ const SUPPORTED_TARGETS = ["darwin-arm64", "darwin-x64", "linux-arm64", "linux-x
 // every function of each object; the stand-ins are made from it, and
 // easy-control.d.ts declares the same
 const API = {
-    "Mouse": ["getX", "getY", "getIcon", "getIconId", "setX", "setY", "setPosition",
-        "buttonDown", "buttonUp", "releaseAll", "scrollDown", "scrollUp"],
-    "Keyboard": ["keyDown", "keyUp", "releaseAll", "isKeySupported", "type", "GetLayout", "SetLayout"],
+    "Mouse": ["getX", "getY", "getIcon", "getIconId", "setX", "setY", "setPosition", "moveBy",
+        "buttonDown", "buttonUp", "releaseAll", "scrollDown", "scrollUp", "scroll"],
+    "Keyboard": ["keyDown", "keyUp", "releaseAll", "isKeySupported", "type", "getLockState",
+        "getLayout", "setLayout", "GetLayout", "SetLayout"],
     "Gamepad": ["list", "create", "getDriverStatus", "installDriver", "uninstallDriver"],
     "Screen": ["list"]
 };
@@ -34,7 +35,7 @@ if (!SUPPORTED_TARGETS.includes(target)) {
         loadError = "easy-control could not load its " + target + " build: " + error.message;
     }
     // a build from before this loader lacks what it relies on
-    if (addon !== null && (typeof addon.Platform !== "object" || typeof addon.Keyboard.releaseAll !== "function")) {
+    if (addon !== null && (typeof addon.Platform !== "object" || typeof addon.Platform.getInputBlock !== "function")) {
         addon = null;
         loadError = "easy-control's " + target + " build is older than its loader; it needs rebuilding (npm run build)";
     }
@@ -73,6 +74,12 @@ const Platform = Object.freeze({
     "hasInputAccess": function() {
         return addon !== null && addon.Platform.hasInputAccess();
     },
+    "getInputBlock": function() {
+        if (addon === null) {
+            throw unsupportedError();
+        }
+        return addon.Platform.getInputBlock();
+    },
     "requestInputAccess": function() {
         return addon !== null ? addon.Platform.requestInputAccess() : Promise.resolve(false);
     }
@@ -81,7 +88,9 @@ const Platform = Object.freeze({
 // Keys and buttons held down when the process ends are released, so a closing
 // app leaves none pressed. On SIGINT and SIGTERM the default (ending the
 // process) still happens, unless the app listens for them itself.
-if (addon !== null) {
+// Only the main thread does it: what is held is kept for the whole process,
+// so a worker ending must not release what the other threads hold.
+if (addon !== null && isMainThread) {
     const releaseAll = function() {
         try {
             addon.Keyboard.releaseAll();
@@ -91,16 +100,14 @@ if (addon !== null) {
         }
     };
     process.on("exit", releaseAll);
-    if (isMainThread) {
-        const onSignal = function(signal) {
-            releaseAll();
-            if (process.listenerCount(signal) === 0) {
-                process.kill(process.pid, signal);
-            }
-        };
-        process.once("SIGINT", onSignal);
-        process.once("SIGTERM", onSignal);
-    }
+    const onSignal = function(signal) {
+        releaseAll();
+        if (process.listenerCount(signal) === 0) {
+            process.kill(process.pid, signal);
+        }
+    };
+    process.once("SIGINT", onSignal);
+    process.once("SIGTERM", onSignal);
 }
 
 module.exports = { Mouse, Keyboard, Gamepad, Screen, Platform };

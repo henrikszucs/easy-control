@@ -46,6 +46,11 @@ typedef struct _DEVICE_CONTEXT {
     WDFQUEUE ReadQueue;
     BOOLEAN HasNewState;
     HID_DEVICE_ATTRIBUTES HidAttributes;
+
+    // XUSB: the addon's pending EASYCONTROL_IOCTL_WAIT_OUTPUT requests, and
+    // the count of output changes they are answered with
+    WDFQUEUE OutputQueue;
+    UINT32 OutputSerial;
 } DEVICE_CONTEXT, *PDEVICE_CONTEXT;
 
 WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(DEVICE_CONTEXT, GetDeviceContext);
@@ -563,6 +568,24 @@ static BOOLEAN CompletePendingInput(PDEVICE_CONTEXT context)
     return TRUE;
 }
 
+// answers a wait for the output with the current one
+static void CompleteOutputWait(PDEVICE_CONTEXT context, WDFREQUEST request)
+{
+    EASYCONTROL_PAD_OUTPUT_EVENT event;
+    event.Serial = context->OutputSerial;
+    event.Output = context->Output;
+    WdfRequestComplete(request, CopyToRequestBuffer(request, &event, sizeof(event)));
+}
+
+// the output changed: every pending wait gets it
+static void CompleteOutputWaits(PDEVICE_CONTEXT context)
+{
+    WDFREQUEST request;
+    while (NT_SUCCESS(WdfIoQueueRetrieveNextRequest(context->OutputQueue, &request))) {
+        CompleteOutputWait(context, request);
+    }
+}
+
 static VOID EvtXusbInputTimer(WDFTIMER timer)
 {
     CompletePendingInput(GetDeviceContext((WDFDEVICE)WdfTimerGetParentObject(timer)));
@@ -658,12 +681,17 @@ VOID EvtXusbDeviceControl(WDFQUEUE queue, WDFREQUEST request, size_t outputLengt
         status = WdfRequestRetrieveInputBuffer(request, sizeof(XUSB_SET_STATE), &input, NULL);
         if (NT_SUCCESS(status)) {
             const XUSB_SET_STATE* set = (const XUSB_SET_STATE*)input;
+            const EASYCONTROL_PAD_OUTPUT before = context->Output;
             if (set->Flags & XUSB_SET_STATE_FLAG_LED) {
                 context->Output.LedState = set->LedState;
             }
             if (set->Flags & XUSB_SET_STATE_FLAG_VIBRATION) {
                 context->Output.LeftMotor = set->LeftMotor;
                 context->Output.RightMotor = set->RightMotor;
+            }
+            if (memcmp(&before, &context->Output, sizeof(before)) != 0) {
+                context->OutputSerial++;
+                CompleteOutputWaits(context);
             }
         }
         break;
@@ -688,6 +716,28 @@ VOID EvtXusbDeviceControl(WDFQUEUE queue, WDFREQUEST request, size_t outputLengt
         break;
     case EASYCONTROL_IOCTL_GET_OUTPUT:
         status = CopyToRequestBuffer(request, &context->Output, sizeof(context->Output));
+        break;
+    case EASYCONTROL_IOCTL_GET_VERSION: {
+        EASYCONTROL_PAD_VERSION_INFO info;
+        info.Version = EASYCONTROL_PAD_VERSION;
+        info.Features = EASYCONTROL_PAD_FEATURE_OUTPUT_POLL | EASYCONTROL_PAD_FEATURE_OUTPUT_WAIT;
+        status = CopyToRequestBuffer(request, &info, sizeof(info));
+        break;
+    }
+    case EASYCONTROL_IOCTL_WAIT_OUTPUT:
+        // answered at once when the output changed since the serial the
+        // addon saw, else kept until it does (cancelled with its handle)
+        status = WdfRequestRetrieveInputBuffer(request, sizeof(UINT32), &input, NULL);
+        if (NT_SUCCESS(status)) {
+            if (*(const UINT32*)input != context->OutputSerial) {
+                CompleteOutputWait(context, request);
+                return;
+            }
+            status = WdfRequestForwardToIoQueue(request, context->OutputQueue);
+            if (NT_SUCCESS(status)) {
+                return;
+            }
+        }
         break;
 
     // XInput falls back to polling the state when these are refused
@@ -774,6 +824,13 @@ NTSTATUS EvtDeviceAdd(WDFDRIVER driver, PWDFDEVICE_INIT deviceInit)
         context->HidAttributes.ProductID = EASYCONTROL_PAD_PID;
         context->HidAttributes.VersionNumber = EASYCONTROL_PAD_PRODUCT_VERSION;
         return STATUS_SUCCESS;
+    }
+
+    // the addon's waits for the output (rumble)
+    WDF_IO_QUEUE_CONFIG_INIT(&queueConfig, WdfIoQueueDispatchManual);
+    status = WdfIoQueueCreate(device, &queueConfig, WDF_NO_OBJECT_ATTRIBUTES, &context->OutputQueue);
+    if (!NT_SUCCESS(status)) {
+        return status;
     }
 
     WDF_TIMER_CONFIG timerConfig;

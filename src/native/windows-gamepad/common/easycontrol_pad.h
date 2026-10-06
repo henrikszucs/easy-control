@@ -15,10 +15,29 @@
 #include <windows.h>
 #include <winioctl.h>
 
-// bumped when anything below changes; the installer writes it to
-// HKLM\SOFTWARE\easy-control\Gamepad "Version", and the addon refuses a
-// driver older than its own
-#define EASYCONTROL_PAD_VERSION 2
+// Versions. The driver is installed once per machine and shared by every app
+// on it, each with an addon of its own easy-control version, so:
+//
+//   A newer driver and service serve every older addon. What is below never
+//   changes its meaning: IOCTL codes, pipe commands and struct layouts are
+//   only ever added, and a pipe response keeps the size the client's version
+//   (EASYCONTROL_PIPE_REQUEST.Version) knows.
+//
+// EASYCONTROL_PAD_VERSION is this driver, service and setup's version, bumped
+// for any change to them; the setup writes it to HKLM\SOFTWARE\easy-control\
+// Gamepad "Version" (last, so a half-done install has none), the service
+// answers it on the pipe and the driver to EASYCONTROL_IOCTL_GET_VERSION.
+// EASYCONTROL_PAD_MIN_VERSION is the oldest installed version the addon works
+// with; raised only when the addon needs what older drivers lack. Anything
+// newer than that is an optional update, and what a driver can do is told by
+// its version (EASYCONTROL_PAD_FEATURE_*).
+#define EASYCONTROL_PAD_VERSION 3
+#define EASYCONTROL_PAD_MIN_VERSION 2
+
+// from version 2: EASYCONTROL_IOCTL_GET_OUTPUT, the rumble and LED state
+#define EASYCONTROL_PAD_FEATURE_OUTPUT_POLL 0x0001
+// from version 3: EASYCONTROL_IOCTL_WAIT_OUTPUT, answered when they change
+#define EASYCONTROL_PAD_FEATURE_OUTPUT_WAIT 0x0002
 
 // the identity of an Xbox 360 controller, which is what games expect
 #define EASYCONTROL_PAD_VID 0x045E
@@ -72,11 +91,27 @@ typedef struct _EASYCONTROL_PAD_OUTPUT {
     UINT8 LedState;
 } EASYCONTROL_PAD_OUTPUT;
 
+// EASYCONTROL_IOCTL_GET_VERSION's answer (version 3; a version 2 driver
+// refuses the request with ERROR_INVALID_FUNCTION)
+typedef struct _EASYCONTROL_PAD_VERSION_INFO {
+    UINT32 Version;         // EASYCONTROL_PAD_VERSION of the running driver
+    UINT32 Features;        // EASYCONTROL_PAD_FEATURE_* bits
+} EASYCONTROL_PAD_VERSION_INFO;
+
+// EASYCONTROL_IOCTL_WAIT_OUTPUT: in, the serial of the output last seen (0 at
+// first); out, the output and its serial, once it differs
+typedef struct _EASYCONTROL_PAD_OUTPUT_EVENT {
+    UINT32 Serial;          // counts every change of the output
+    EASYCONTROL_PAD_OUTPUT Output;
+} EASYCONTROL_PAD_OUTPUT_EVENT;
+
 #pragma pack(pop)
 
 // sent to the XUSB device, beside XInput's own requests
-#define EASYCONTROL_IOCTL_SET_STATE  CTL_CODE(0x8000, 0x900, METHOD_BUFFERED, FILE_WRITE_ACCESS)
-#define EASYCONTROL_IOCTL_GET_OUTPUT CTL_CODE(0x8000, 0x901, METHOD_BUFFERED, FILE_READ_ACCESS)
+#define EASYCONTROL_IOCTL_SET_STATE   CTL_CODE(0x8000, 0x900, METHOD_BUFFERED, FILE_WRITE_ACCESS)
+#define EASYCONTROL_IOCTL_GET_OUTPUT  CTL_CODE(0x8000, 0x901, METHOD_BUFFERED, FILE_READ_ACCESS)
+#define EASYCONTROL_IOCTL_GET_VERSION CTL_CODE(0x8000, 0x902, METHOD_BUFFERED, FILE_ANY_ACCESS)
+#define EASYCONTROL_IOCTL_WAIT_OUTPUT CTL_CODE(0x8000, 0x903, METHOD_BUFFERED, FILE_READ_ACCESS)
 
 // HID device: input report 1 is the gamepad, feature report 2 (on a
 // vendor-defined collection) takes an EASYCONTROL_PAD_STATE

@@ -70,6 +70,30 @@ public class SwiftCode: NSObject {
 
         return device.setAxis(axisIndex: axisId, value: Int16(clamping: value))
     }
+
+    // between these, changes are kept and go as one report (setState)
+    @objc public static func beginUpdate(_ gamepadId: Int) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+
+        guard let device = gamepads[gamepadId] else {
+            return false
+        }
+
+        device.beginUpdate()
+        return true
+    }
+
+    @objc public static func endUpdate(_ gamepadId: Int) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+
+        guard let device = gamepads[gamepadId] else {
+            return false
+        }
+
+        return device.endUpdate()
+    }
 }
 
 // The gamepad's state, sent whole in every report
@@ -112,6 +136,8 @@ final class GamepadDelegate: HIDVirtualDeviceDelegate {
     private var reports: AsyncStream<Data>.Continuation?
     private var pumpTask: Task<Void, Never>?
     private var initialized: Bool = false
+    // while true, changes are kept and not sent (beginUpdate/endUpdate)
+    private var isUpdating: Bool = false
 
     // A generic HID gamepad. The order of the usages is the W3C Standard
     // Gamepad order, which is what browsers and SDL fall back to for a gamepad
@@ -266,9 +292,21 @@ final class GamepadDelegate: HIDVirtualDeviceDelegate {
         return sendReport()
     }
 
+    @objc public func beginUpdate() {
+        isUpdating = true
+    }
+
+    @objc public func endUpdate() -> Bool {
+        isUpdating = false
+        return sendReport()
+    }
+
     private func sendReport() -> Bool {
         guard initialized, let reports = reports else {
             return false
+        }
+        if isUpdating {
+            return true
         }
 
         // 3 bytes of buttons + 4 x 16-bit sticks + 2 x 8-bit triggers

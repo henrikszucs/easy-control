@@ -9,8 +9,21 @@
         #define WIN32_LEAN_AND_MEAN 1
     #endif
     #include <windows.h>
+    #include <napi.h>
     #include <string>
     #include <vector>
+
+    // Throws the Error of input Windows did not take (SendInput sending
+    // nothing, the pointer not to be read or set): the secure desktop - a UAC
+    // prompt, the lock or sign-in screen - is showing, or input is otherwise
+    // not this process's to send. UIPI drops are not reported this way;
+    // Platform.getInputBlock() tells about those.
+    inline void ThrowInputBlocked(Napi::Env env, const std::string& what) {
+        Napi::Error error = Napi::Error::New(env, "Windows did not take the input (" + what +
+            "); the secure desktop (a UAC prompt, the lock screen) may be showing, see Platform.getInputBlock()");
+        error.Set("code", Napi::String::New(env, "EASYCONTROL_INPUT_BLOCKED"));
+        error.ThrowAsJavaScriptException();
+    }
 
     // Runs the enclosed Win32 calls per-monitor DPI aware, so every coordinate
     // they take or return is in physical pixels, whatever DPI awareness the

@@ -13,13 +13,21 @@
 #include <sys/ioctl.h>
 #include <linux/uinput.h>
 
+// the high-resolution wheel axes (Linux 5.0); defined here for older headers
+#ifndef REL_WHEEL_HI_RES
+    #define REL_WHEEL_HI_RES 0x0b
+#endif
+#ifndef REL_HWHEEL_HI_RES
+    #define REL_HWHEEL_HI_RES 0x0c
+#endif
 
-int OpenUinput(std::string& error) {
+
+int OpenUinput(std::string& error, bool isReadable) {
     // the uinput device lives at one of two paths
     const char* paths[] = {"/dev/uinput", "/dev/input/uinput"};
     int openError = 0;
     for (const char* path : paths) {
-        int fd = open(path, O_WRONLY | O_NONBLOCK);
+        int fd = open(path, (isReadable ? O_RDWR : O_WRONLY) | O_NONBLOCK);
         if (fd >= 0) {
             return fd;
         }
@@ -45,6 +53,7 @@ const int POINTER_RANGE = 65535;
 
 std::mutex deviceMutex;
 int pointerFd = -1;
+int mouseFd = -1;
 int keyboardFd = -1;
 
 bool Write(int fd, const struct input_event* events, size_t count) {
@@ -112,8 +121,12 @@ bool EnsurePointer(std::string& error) {
         for (int button : buttons) {
             ioctl(fd, UI_SET_KEYBIT, button);
         }
+        // the high-resolution wheel axes too: libinput reads only those from a
+        // device that has them, so every scroll sends both
         ioctl(fd, UI_SET_RELBIT, REL_WHEEL);
         ioctl(fd, UI_SET_RELBIT, REL_HWHEEL);
+        ioctl(fd, UI_SET_RELBIT, REL_WHEEL_HI_RES);
+        ioctl(fd, UI_SET_RELBIT, REL_HWHEEL_HI_RES);
 
         struct uinput_abs_setup absSetup;
         memset(&absSetup, 0, sizeof(absSetup));
@@ -127,6 +140,24 @@ bool EnsurePointer(std::string& error) {
         return ioctl(fd, UI_ABS_SETUP, &absSetup) >= 0;
     }, error);
     return pointerFd >= 0;
+}
+
+// A relative mouse, for movement by a distance (moveBy): what a compositor
+// gives a locked pointer, which an absolute device never makes. BTN_LEFT, which
+// it never presses, makes udev count it as a mouse; the buttons and wheels go
+// through the absolute pointer.
+bool EnsureMouse(std::string& error) {
+    if (mouseFd >= 0) {
+        return true;
+    }
+    mouseFd = CreateDevice("mouse", 0x0004, [](int fd) {
+        return ioctl(fd, UI_SET_EVBIT, EV_KEY) >= 0 &&
+            ioctl(fd, UI_SET_EVBIT, EV_REL) >= 0 &&
+            ioctl(fd, UI_SET_KEYBIT, BTN_LEFT) >= 0 &&
+            ioctl(fd, UI_SET_RELBIT, REL_X) >= 0 &&
+            ioctl(fd, UI_SET_RELBIT, REL_Y) >= 0;
+    }, error);
+    return mouseFd >= 0;
 }
 
 // A keyboard with every key of the evdev range the key tables use.
@@ -194,12 +225,28 @@ bool PointerButton(unsigned short button, bool isDown, std::string& error) {
     return Send(pointerFd, {Event(EV_KEY, button, isDown ? 1 : 0)}, error);
 }
 
+bool PointerMoveBy(int dx, int dy, std::string& error) {
+    std::lock_guard<std::mutex> lock(deviceMutex);
+    if (!EnsureMouse(error)) {
+        return false;
+    }
+    return Send(mouseFd, {Event(EV_REL, REL_X, dx), Event(EV_REL, REL_Y, dy)}, error);
+}
+
 bool PointerScroll(unsigned short axis, int amount, std::string& error) {
+    return PointerScrollHiRes(axis, amount * 120, amount, error);
+}
+
+bool PointerScrollHiRes(unsigned short axis, int amount, int notches, std::string& error) {
     std::lock_guard<std::mutex> lock(deviceMutex);
     if (!EnsurePointer(error)) {
         return false;
     }
-    return Send(pointerFd, {Event(EV_REL, axis, amount)}, error);
+    const unsigned short hiResAxis = axis == REL_HWHEEL ? REL_HWHEEL_HI_RES : REL_WHEEL_HI_RES;
+    if (notches == 0) {
+        return Send(pointerFd, {Event(EV_REL, hiResAxis, amount)}, error);
+    }
+    return Send(pointerFd, {Event(EV_REL, hiResAxis, amount), Event(EV_REL, axis, notches)}, error);
 }
 
 bool KeyboardKey(unsigned short key, bool isDown, std::string& error) {

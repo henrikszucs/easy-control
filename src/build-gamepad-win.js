@@ -225,6 +225,9 @@ const buildArch = async function(vcvars, arch, version) {
     // Windows PowerShell 5.1 reads a script without a BOM as ANSI
     await fs.writeFile(path.join(dist, "easy-control-gamepad-setup.ps1"),
         "﻿" + setup.replaceAll("$PAD_VERSION$", version).replace(/\r?\n/g, "\r\n"));
+    // the version these files are, which the addon (built apart from them)
+    // reports as getDriverStatus().available
+    await fs.writeFile(path.join(dist, "version.json"), JSON.stringify({ "version": Number(version) }) + "\n");
 
     for (const file of await fs.readdir(dist)) {
         const size = (await fs.stat(path.join(dist, file))).size;

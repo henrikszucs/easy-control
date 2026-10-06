@@ -15,12 +15,13 @@ const pkg = JSON.parse(await fs.readFile(path.join(rootPath, "package.json"), "u
 
 // every function of each object, as the README and easy-control.d.ts give them
 const API = {
-    "Mouse": ["getX", "getY", "getIcon", "getIconId", "setX", "setY", "setPosition",
-        "buttonDown", "buttonUp", "releaseAll", "scrollDown", "scrollUp"],
-    "Keyboard": ["keyDown", "keyUp", "releaseAll", "isKeySupported", "type", "GetLayout", "SetLayout"],
+    "Mouse": ["getX", "getY", "getIcon", "getIconId", "setX", "setY", "setPosition", "moveBy",
+        "buttonDown", "buttonUp", "releaseAll", "scrollDown", "scrollUp", "scroll"],
+    "Keyboard": ["keyDown", "keyUp", "releaseAll", "isKeySupported", "type", "getLockState",
+        "getLayout", "setLayout", "GetLayout", "SetLayout"],
     "Gamepad": ["list", "create", "getDriverStatus", "installDriver", "uninstallDriver"],
     "Screen": ["list"],
-    "Platform": ["hasInputAccess", "requestInputAccess"]
+    "Platform": ["hasInputAccess", "requestInputAccess", "getInputBlock"]
 };
 
 test("dist holds the native addon for the running platform", async function() {
@@ -82,6 +83,33 @@ test("Platform describes the running target", function() {
     assert.ok(Object.isFrozen(Platform));
 });
 
+test("Platform.getInputBlock is null or one of the documented reasons", function() {
+    const block = Platform.getInputBlock();
+    assert.ok(block === null || ["secure-desktop", "elevated-window", "secure-input", "no-permission"].includes(block), String(block));
+    if (Platform.hasInputAccess() === false) {
+        assert.notEqual(block, null, "no access is a reason");
+    }
+});
+
+test("only the main thread releases held input when it ends", async function() {
+    const { Worker } = await import("node:worker_threads");
+    const before = process.listenerCount("exit");
+    const worker = new Worker([
+        "const { parentPort } = require('node:worker_threads');",
+        "const before = process.listenerCount('exit');",
+        "require(" + JSON.stringify(path.join(distPath, "easy-control.cjs")) + ");",
+        "parentPort.postMessage([before, process.listenerCount('exit')]);"
+    ].join("\n"), { "eval": true });
+    const [workerBefore, workerAfter] = await new Promise(function(resolve, reject) {
+        worker.once("message", resolve);
+        worker.once("error", reject);
+    });
+    await worker.terminate();
+    // (Node has an exit listener of its own in a worker)
+    assert.equal(workerAfter, workerBefore, "a worker registers no exit hook: what is held is the whole process's");
+    assert.equal(process.listenerCount("exit"), before);
+});
+
 test("Platform.requestInputAccess resolves with a boolean", { "skip": os.platform() === "darwin" && "shows the system prompt on macOS" }, async function() {
     assert.equal(await Platform.requestInputAccess(), Platform.hasInputAccess());
 });
@@ -94,6 +122,7 @@ test("on an unsupported target the import works and every function says why", fu
         "const result = { isSupported: c.Platform.isSupported, loadError: c.Platform.loadError,",
         "    hasInputAccess: c.Platform.hasInputAccess(), target: c.Platform.target };",
         "try { c.Mouse.getX(); } catch (error) { result.mouseCode = error.code; result.mouseMessage = error.message; }",
+        "try { c.Platform.getInputBlock(); } catch (error) { result.blockCode = error.code; }",
         "c.Gamepad.create().catch((error) => { result.gamepadCode = error.code; })",
         "    .then(() => c.Platform.requestInputAccess()).then((access) => { result.requestInputAccess = access;",
         "    console.log(JSON.stringify(result)); });"
@@ -106,5 +135,6 @@ test("on an unsupported target the import works and every function says why", fu
     assert.equal(result.requestInputAccess, false);
     assert.equal(result.mouseCode, "EASYCONTROL_UNSUPPORTED_PLATFORM");
     assert.equal(result.mouseMessage, result.loadError);
+    assert.equal(result.blockCode, "EASYCONTROL_UNSUPPORTED_PLATFORM");
     assert.equal(result.gamepadCode, "EASYCONTROL_UNSUPPORTED_PLATFORM", "a Promise function rejects rather than throws");
 });
