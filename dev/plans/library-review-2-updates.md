@@ -26,7 +26,7 @@ Not verified yet:
 - macOS: nothing of it is compiled until CI runs (click count, delta fields, pixel scroll, secure input,
   `getLockState`, the Swift `beginUpdate`/`endUpdate`).
 - Linux rumble from a force feedback client: the WSL2 kernel behind Docker has no evdev; CI runs
-  `rumble-linux.test.js` with uinput set up.
+  the rumble test of `gamepad.test.js` with uinput set up.
 - Wayland input (relative mouse, hi-res wheel): needs a real compositor.
 
 Departures from the plan:

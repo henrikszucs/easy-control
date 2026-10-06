@@ -466,7 +466,7 @@ npm run test:driver   # Windows: uninstalls and reinstalls the gamepad driver, t
 
 On Linux, `test/unit/typing-x11.test.js` types into a window of its own with a Hungarian layout, to check characters
 that need AltGr; as it types for real, it runs only with `EASYCONTROL_TYPING_TEST=1` (CI sets it under Xvfb).
-`test/unit/rumble-linux.test.js` rumbles a virtual gamepad as a game does (`ff-client.c`, built with `cc`); it needs
+`test/unit/gamepad.test.js` also rumbles a virtual gamepad as a game does (`ff-client.c`, built with `cc`); it needs
 uinput and read-write access to the gamepad's event device, so it runs only with `EASYCONTROL_RUMBLE_TEST=1` (CI
 sets both up).
 CI (`.github/workflows/build.yml`) builds every target and runs these on Windows, macOS and Linux.

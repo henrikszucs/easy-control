@@ -1,4 +1,4 @@
-// What a game does to rumble a gamepad on Linux, for rumble-linux.test.js:
+// What a game does to rumble a gamepad on Linux, for gamepad.test.js:
 // uploads a rumble effect of 200 ms and plays it, lets it end by its length,
 // then plays a second one without a length and stops it, and erases both.
 //

@@ -7,6 +7,8 @@
 
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
+import { execFile, execFileSync } from "node:child_process";
+import fsSync from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -235,3 +237,91 @@ test("destroy unplugs: inactive, out of the list, and its methods throw", { "ski
     gamepad.destroy();   // a second destroy is harmless
     assert.equal(gamepad.isActive(), false);
 });
+
+
+//
+// Linux rumble: ff-client.c uploads and plays force feedback effects on the
+// pad's event device, as a game does, and onRumble reports them. It needs
+// read-write access to that device, so it runs only where
+// EASYCONTROL_RUMBLE_TEST=1 says it is set up - CI does
+// (.github/workflows/build.yml). It is in this file because the test files
+// run at the same time, and only this one's tests (which run one after
+// another) make pads: the event device found by name is this test's own.
+//
+const hasCompiler = function() {
+    try {
+        execFileSync("cc", ["--version"], { "stdio": "ignore" });
+        return true;
+    } catch {
+        return false;
+    }
+};
+
+const skipNoRumbleTest = skipNoDriver ||
+    (os.platform() !== "linux" && "Linux only") ||
+    (process.env["EASYCONTROL_RUMBLE_TEST"] !== "1" && "needs the pad's event device; set EASYCONTROL_RUMBLE_TEST=1 to run it (CI does)") ||
+    (!hasCompiler() && "no C compiler");
+
+// the event device of the virtual pad, once udev has made it usable
+const findEventDevice = async function() {
+    const end = Date.now() + 5000;
+    while (Date.now() < end) {
+        for (const entry of fsSync.readdirSync("/sys/class/input")) {
+            if (!entry.startsWith("event")) {
+                continue;
+            }
+            let name = "";
+            try {
+                name = fsSync.readFileSync(path.join("/sys/class/input", entry, "device", "name"), "utf8").trim();
+            } catch {
+                continue;
+            }
+            const device = path.join("/dev/input", entry);
+            if (name === "Virtual Xbox 360 Controller") {
+                try {
+                    fsSync.accessSync(device, fsSync.constants.R_OK | fsSync.constants.W_OK);
+                    return device;
+                } catch {
+                    // udev has not set its access yet
+                }
+            }
+        }
+        await new Promise(function(resolve) { setTimeout(resolve, 50); });
+    }
+    throw new Error("No usable event device of the virtual gamepad");
+};
+
+test("Linux: onRumble reports a game's rumble effects, their end by length and their stop", { "skip": skipNoRumbleTest }, async function() {
+    const clientExe = path.join(os.tmpdir(), "easy-control-ff-client");
+    execFileSync("cc", ["-o", clientExe, path.join(import.meta.dirname, "ff-client.c")]);
+    assert.deepEqual(Gamepad.list(), [], "no other pad of this process");
+    const gamepad = await Gamepad.create();
+    try {
+        const rumbles = [];
+        gamepad.onRumble = function(rumble) {
+            rumbles.push(rumble);
+        };
+        const device = await findEventDevice();
+        // the client runs apart, as a game would: its uploads wait for the pad's answers
+        await new Promise(function(resolve, reject) {
+            execFile(clientExe, [device], function(error, stdout, stderr) {
+                error ? reject(new Error(stderr || error.message)) : resolve();
+            });
+        });
+        await new Promise(function(resolve) { setTimeout(resolve, 100); });
+        const expected = [
+            { "strong": 0xC000 / 65535, "weak": 0x4000 / 65535 },
+            { "strong": 0, "weak": 0 },     // ended by its length
+            { "strong": 1, "weak": 1 },
+            { "strong": 0, "weak": 0 }      // stopped
+        ];
+        assert.equal(rumbles.length, expected.length, JSON.stringify(rumbles));
+        rumbles.forEach(function(rumble, i) {
+            assert.ok(Math.abs(rumble["strong"] - expected[i]["strong"]) < 1e-6 && Math.abs(rumble["weak"] - expected[i]["weak"]) < 1e-6,
+                "rumble " + i + ": " + JSON.stringify(rumble) + ", expected " + JSON.stringify(expected[i]));
+        });
+    } finally {
+        gamepad.destroy();
+    }
+});
+
