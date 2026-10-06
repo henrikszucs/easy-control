@@ -353,7 +353,9 @@ application asks for a gamepad and stops itself after a minute with none.
 
 `Gamepad.create()` rejects with an Error with one of these `code`s: `EASYCONTROL_DRIVER_MISSING`,
 `EASYCONTROL_DRIVER_OUTDATED`, `EASYCONTROL_DRIVER_RESTART_NEEDED`, `EASYCONTROL_NO_SLOT` (4 gamepads already),
-`EASYCONTROL_SERVICE_FAILED`, `EASYCONTROL_CREATE_FAILED`.
+`EASYCONTROL_SERVICE_FAILED`, `EASYCONTROL_CREATE_FAILED`. `Gamepad.installDriver()` and `uninstallDriver()` reject
+with `EASYCONTROL_SETUP_CANCELLED` (the UAC prompt was declined), `EASYCONTROL_SETUP_MISSING` (the driver files are
+not beside the addon - not unpacked from an asar archive?) or `EASYCONTROL_SETUP_FAILED` (see the setup log).
 
 
 ### Screen

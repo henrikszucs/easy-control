@@ -7,21 +7,33 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 
-import { Mouse, Screen, pixelTolerance, skipNoInputAccess } from "./helpers.js";
+import os from "node:os";
 
-const startX = Mouse.getX();
-const startY = Mouse.getY();
+import { Mouse, Screen, inputBlock, pixelTolerance, skipNoInputAccess } from "./helpers.js";
+
+// where the pointer was, to put it back; on the secure desktop it cannot be read
+const isPointerReadable = !(os.platform() === "win32" && inputBlock === "secure-desktop");
+const startX = isPointerReadable ? Mouse.getX() : 0;
+const startY = isPointerReadable ? Mouse.getY() : 0;
 after(function() {
-    Mouse.setPosition(startX, startY);
+    if (isPointerReadable) {
+        Mouse.setPosition(startX, startY);
+    }
 });
 
 const assertNear = function(actual, expected, tolerance, message) {
     assert.ok(Math.abs(actual - expected) <= tolerance, message + ": " + actual + " is not within " + tolerance + " of " + expected);
 };
 
-test("getX and getY return finite numbers", function() {
+test("getX and getY return finite numbers", { "skip": !isPointerReadable && "the secure desktop is showing" }, function() {
     assert.ok(Number.isFinite(Mouse.getX()));
     assert.ok(Number.isFinite(Mouse.getY()));
+});
+
+test("on the secure desktop the pointer is not read, and the error says why", { "skip": isPointerReadable && "no secure desktop showing" }, function() {
+    for (const fn of [Mouse.getX, Mouse.getY]) {
+        assert.throws(fn, { "code": "EASYCONTROL_INPUT_BLOCKED", "message": /getInputBlock/ });
+    }
 });
 
 test("a position read can be set back unchanged", { "skip": skipNoInputAccess }, function() {

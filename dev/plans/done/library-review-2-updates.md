@@ -1,8 +1,8 @@
 # Plan: updates from the second library review
 
-Status: phases 1-5 implemented on branch `review-2-updates` (2026-10-06); phase 6 (desktop-streamer) is the
-maintainer's, as a separate project, later - it pins easy-control v0.9.0, so it starts from the 0.12.0 release;
-phase 7 waits for CI. Covers the review of 2026-10-06 (the second one
+Status: done, 2026-10-06 - released as v0.12.0 (merged as #2, `dist/` from CI run 37511178212). Phase 6
+(desktop-streamer) is the maintainer's, as a separate project, later - it pins easy-control v0.9.0, so it starts
+from this release. Covers the review of 2026-10-06 (the second one
 that day, after `library-review-fixes.md`), aimed at what a remote desktop (`desktop-streamer`) needs from the
 library. Target release: 0.12.0.
 
@@ -35,7 +35,12 @@ Not verified on a real desktop (what CI cannot do):
   figure, not measured), `"secure-input"`, `getLockState`; and the gamepad's one-report `setState` (macOS 26
   and an entitled app).
 - Wayland input (relative mouse, hi-res wheel): needs a real compositor.
-- Phase 7: merging, `update-dist`, the `v0.12.0` tag - the maintainer's.
+
+Phase 7: `update-dist` run 37511178212 built and tested every target; GitHub does not let Actions open pull
+requests in this repository, so its branch (`ci/update-dist`, on top of the merge) went into `main` by
+fast-forward. Its win32-x64 build passed `npm test` on the dev machine - while it was locked, which showed the
+pointer tests failing on the secure desktop now that `getX` throws there: they skip on it now, and a test checks
+the `EASYCONTROL_INPUT_BLOCKED` error itself. The README got the error codes of `installDriver()`.
 
 Departures from the plan:
 - 12: `create.Gamepad` stays in the types - the type tests use it for `instanceof`, so removing it would break

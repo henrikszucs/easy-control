@@ -3,7 +3,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { Mouse, Screen, isOnScreen, isX11 } from "./helpers.js";
+import { Mouse, Screen, inputBlock, isOnScreen, isX11 } from "./helpers.js";
 
 test("Screen.list returns at least one screen with the documented fields", function() {
     const screens = Screen.list();
@@ -49,7 +49,7 @@ test("screens do not overlap in the logical space", function() {
     }
 });
 
-test("the pointer position lies on a listed screen", function() {
+test("the pointer position lies on a listed screen", { "skip": inputBlock === "secure-desktop" && "the secure desktop is showing: the pointer cannot be read" }, function() {
     const screens = Screen.list();
     assert.ok(isOnScreen(screens, Math.floor(Mouse.getX()), Math.floor(Mouse.getY())));
 });

@@ -14,8 +14,14 @@ const require = createRequire(import.meta.url);
 export const Control = require(path.join(distPath, "easy-control.cjs"));
 export const { Mouse, Keyboard, Gamepad, Screen, Platform } = Control;
 
-// input tests need the permission to send input (macOS Accessibility, ...)
-export const skipNoInputAccess = !Platform.hasInputAccess() && "no permission to send input here (Platform.hasInputAccess())";
+// why input would not arrive now (the lock screen, ...); null when it would
+export const inputBlock = Platform.getInputBlock();
+
+// input tests need the permission to send input (macOS Accessibility, ...),
+// and nothing in its way (Windows: the secure desktop, where the pointer
+// cannot even be read)
+export const skipNoInputAccess = (!Platform.hasInputAccess() && "no permission to send input here (Platform.hasInputAccess())") ||
+    (inputBlock !== null && "input is blocked here: " + inputBlock + " (Platform.getInputBlock())");
 
 // Linux sessions where the X11 calls go through XWayland or are missing
 export const isWayland = os.platform() === "linux" && (
