@@ -224,10 +224,23 @@ and other wlroots compositors, ...).
 
 ## Testing
 
-The Windows gamepad needs the ViGEmBus driver; without it `Gamepad.create()` throws and the test app reports that and skips the gamepad tests.
+The tests use the built `dist/`, so build first.
 
+```
+npm test            # unit tests (node:test), test/unit/
+npm run test:e2e    # end-to-end tests in an Electron window, test/e2e/
+```
 
-The tests run in electron enviroment. Copy ./dev/test folder to electron app and run.
+`npm test` checks the loaders, every function's results and argument checks, and the gamepad lifecycle. It moves the
+pointer and puts it back, but never clicks, scrolls or presses keys.
+
+`npm run test:e2e` opens a window and drives it with real input: clicks with every button, drags, scrolling,
+`getIcon`/`getIconId` against two pointer shapes, every common key, modifiers, `Keyboard.type`, `Screen.list` against
+Electron's screen API, and a virtual gamepad against `navigator.getGamepads()`. It takes the mouse and keyboard for
+about 5 seconds; keys are only pressed while its window has the focus.
+
+The gamepad tests need the platform's virtual gamepad support (ViGEmBus on Windows, uinput on Linux, see Gamepad);
+without it they are skipped, with the reason `Gamepad.create()` gave.
 
 ## Building
 

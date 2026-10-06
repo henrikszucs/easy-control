@@ -36,7 +36,8 @@
     "scripts": {
         "build": "node index.js",
         "build:js": "node src/build.js",
-        "test": "node dev/test.js",
+        "test": "node --test \"test/unit/*.test.js\"",
+        "test:e2e": "node test/e2e/run.cjs",
         "clean": "node index.js -- --uninstall"
     },
     "type": "module",
@@ -54,8 +55,9 @@
         "dist"
     ],
     "devDependencies": {
+        "electron": "^44.5.1",
         "esbuild": "^0.28.2",
         "node-addon-api": "^8.5.0",
-        "node-gyp": "^11.0.0"
+        "node-gyp": "^13.1.0"
     }
 }
