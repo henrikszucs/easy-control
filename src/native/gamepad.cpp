@@ -7,11 +7,7 @@
 #include <vector>
 
 #if defined(IS_WINDOWS)
-    #include <windows.h>
-
-    #include <Xinput.h>
-    #include <ViGEm/Client.h>
-    #pragma comment(lib, "ViGEmClient.lib")
+    #include "gamepad_win.h"
 #elif defined(IS_MACOS)
     #import <Foundation/Foundation.h>
     #include "GamepadBridge.h"
@@ -78,59 +74,14 @@ Gamepad::Gamepad(const Napi::CallbackInfo& info) : Napi::ObjectWrap<Gamepad>(inf
     Napi::Env env = info.Env();
 
     #if defined(IS_WINDOWS)
-        // allocate memory
-        this->m_client = vigem_alloc();
-        if (this->m_client == nullptr) {
-            Napi::Error::New(env, "Failed to allocate the ViGEm client").ThrowAsJavaScriptException();
+        WinPadError error;
+        this->m_pad = WinPadCreate(error);
+        if (this->m_pad == nullptr) {
+            Napi::Error jsError = Napi::Error::New(env, error.message);
+            jsError.Set("code", Napi::String::New(env, error.code));
+            jsError.ThrowAsJavaScriptException();
             return;
         }
-
-        // connect to the driver
-        const VIGEM_ERROR connected = vigem_connect(this->m_client);
-        if (!VIGEM_SUCCESS(connected)) {
-            vigem_free(this->m_client);
-            this->m_client = nullptr;
-            char message[160];
-            if (connected == VIGEM_ERROR_BUS_NOT_FOUND) {
-                snprintf(message, sizeof(message), "ViGEmBus driver is not installed (https://github.com/nefarius/ViGEmBus/releases)");
-            } else if (connected == VIGEM_ERROR_BUS_VERSION_MISMATCH) {
-                snprintf(message, sizeof(message), "ViGEmBus driver version is not supported, update it (https://github.com/nefarius/ViGEmBus/releases)");
-            } else if (connected == VIGEM_ERROR_BUS_ACCESS_FAILED) {
-                snprintf(message, sizeof(message), "Access to the ViGEmBus driver failed");
-            } else {
-                snprintf(message, sizeof(message), "Failed to connect to the ViGEmBus driver (0x%08X)", (unsigned int)connected);
-            }
-            Napi::Error::New(env, message).ThrowAsJavaScriptException();
-            return;
-        }
-
-        // create a new Xbox 360 controller target
-        PVIGEM_TARGET pad = vigem_target_x360_alloc();
-        if (pad == nullptr) {
-            this->Release();
-            Napi::Error::New(env, "Failed to allocate the virtual controller").ThrowAsJavaScriptException();
-            return;
-        }
-        const VIGEM_ERROR added = vigem_target_add(this->m_client, pad);
-        if (!VIGEM_SUCCESS(added)) {
-            // never plugged in, so only freed
-            vigem_target_free(pad);
-            this->Release();
-            char message[96];
-            if (added == VIGEM_ERROR_NO_FREE_SLOT) {
-                snprintf(message, sizeof(message), "No free slot for another virtual controller");
-            } else {
-                snprintf(message, sizeof(message), "Failed to plug in the virtual controller (0x%08X)", (unsigned int)added);
-            }
-            Napi::Error::New(env, message).ThrowAsJavaScriptException();
-            return;
-        }
-        this->m_pad = pad;
-
-        // the state every update sends whole
-        this->m_report = new XUSB_REPORT();
-        XUSB_REPORT_INIT(this->m_report);
-
         this->m_active = true;
 
     #elif defined(IS_MACOS)
@@ -243,20 +194,8 @@ Gamepad::~Gamepad() {
 void Gamepad::Release() {
     this->m_active = false;
     #if defined(IS_WINDOWS)
-        if (this->m_pad != nullptr) {
-            vigem_target_remove(this->m_client, this->m_pad);
-            vigem_target_free(this->m_pad);
-            this->m_pad = nullptr;
-        }
-        if (this->m_client != nullptr) {
-            vigem_disconnect(this->m_client);
-            vigem_free(this->m_client);
-            this->m_client = nullptr;
-        }
-        if (this->m_report != nullptr) {
-            delete this->m_report;
-            this->m_report = nullptr;
-        }
+        WinPadDestroy(this->m_pad);
+        this->m_pad = nullptr;
     #elif defined(IS_MACOS)
         if (this->m_gamepad_id >= 0) {
             [GamepadBridge destroyGamepad:this->m_gamepad_id];
@@ -315,35 +254,7 @@ void Gamepad::SetButton(const Napi::CallbackInfo& info, bool isDown) {
     }
 
     #if defined(IS_WINDOWS)
-        USHORT buttonMask = 0;
-        switch (btnIndex) {
-            case 0: buttonMask = XUSB_GAMEPAD_A; break;
-            case 1: buttonMask = XUSB_GAMEPAD_B; break;
-            case 2: buttonMask = XUSB_GAMEPAD_X; break;
-            case 3: buttonMask = XUSB_GAMEPAD_Y; break;
-            case 4: buttonMask = XUSB_GAMEPAD_LEFT_SHOULDER; break;
-            case 5: buttonMask = XUSB_GAMEPAD_RIGHT_SHOULDER; break;
-            case 6: this->m_report->bLeftTrigger = isDown ? 255 : 0; break;
-            case 7: this->m_report->bRightTrigger = isDown ? 255 : 0; break;
-            case 8: buttonMask = XUSB_GAMEPAD_BACK; break;
-            case 9: buttonMask = XUSB_GAMEPAD_START; break;
-            case 10: buttonMask = XUSB_GAMEPAD_LEFT_THUMB; break;
-            case 11: buttonMask = XUSB_GAMEPAD_RIGHT_THUMB; break;
-            case 12: buttonMask = XUSB_GAMEPAD_DPAD_UP; break;
-            case 13: buttonMask = XUSB_GAMEPAD_DPAD_DOWN; break;
-            case 14: buttonMask = XUSB_GAMEPAD_DPAD_LEFT; break;
-            case 15: buttonMask = XUSB_GAMEPAD_DPAD_RIGHT; break;
-            case 16: buttonMask = XUSB_GAMEPAD_GUIDE; break;
-        }
-
-        if (isDown) {
-            this->m_report->wButtons |= buttonMask;
-        } else {
-            this->m_report->wButtons &= ~buttonMask;
-        }
-
-        const VIGEM_ERROR result = vigem_target_x360_update(this->m_client, this->m_pad, *this->m_report);
-        if (!VIGEM_SUCCESS(result)) {
+        if (!WinPadSetButton(this->m_pad, btnIndex, isDown)) {
             Napi::Error::New(env, "Failed to update gamepad state").ThrowAsJavaScriptException();
             return;
         }
@@ -431,32 +342,7 @@ void Gamepad::SetAxis(const Napi::CallbackInfo& info) {
     }
 
     #if defined(IS_WINDOWS)
-        // Convert normalized value (-1.0 to 1.0) to Xbox 360 range
-        SHORT value = (SHORT)(axisValue * 32767.0);
-
-        switch (axisIndex) {
-            case 0: // Left Stick X
-                this->m_report->sThumbLX = value;
-                break;
-            case 1: // Left Stick Y (XInput counts up as positive)
-                this->m_report->sThumbLY = -value;
-                break;
-            case 2: // Right Stick X
-                this->m_report->sThumbRX = value;
-                break;
-            case 3: // Right Stick Y (XInput counts up as positive)
-                this->m_report->sThumbRY = -value;
-                break;
-            case 4: // Left Trigger (0-255)
-                this->m_report->bLeftTrigger = (BYTE)((axisValue + 1.0) * 127.5);
-                break;
-            case 5: // Right Trigger (0-255)
-                this->m_report->bRightTrigger = (BYTE)((axisValue + 1.0) * 127.5);
-                break;
-        }
-
-        const VIGEM_ERROR result = vigem_target_x360_update(this->m_client, this->m_pad, *this->m_report);
-        if (!VIGEM_SUCCESS(result)) {
+        if (!WinPadSetAxis(this->m_pad, axisIndex, axisValue)) {
             Napi::Error::New(env, "Failed to update gamepad state").ThrowAsJavaScriptException();
             return;
         }
@@ -490,10 +376,93 @@ void Gamepad::SetAxis(const Napi::CallbackInfo& info) {
 }
 
 
+// Gamepad.getDriverStatus(): { isInstalled, version, required, isOutdated }.
+// Only Windows needs a driver installed; elsewhere it reports one is.
+Napi::Value Gamepad::GetDriverStatus(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    Napi::Object result = Napi::Object::New(env);
+    #if defined(IS_WINDOWS)
+        const WinDriverStatus status = WinDriverGetStatus();
+        result.Set("isInstalled", status.isInstalled);
+        result.Set("version", status.isInstalled ? Napi::Value(Napi::Number::New(env, status.version)) : env.Null());
+        result.Set("required", status.required);
+        result.Set("isOutdated", status.isInstalled && status.version < status.required);
+    #else
+        result.Set("isInstalled", true);
+        result.Set("version", env.Null());
+        result.Set("required", env.Null());
+        result.Set("isOutdated", false);
+    #endif
+    return result;
+}
+
+#if defined(IS_WINDOWS)
+// runs the driver setup off the JS thread: it waits for the UAC prompt
+class DriverSetupWorker : public Napi::AsyncWorker {
+    public:
+        DriverSetupWorker(Napi::Env env, const wchar_t* action)
+            : Napi::AsyncWorker(env), m_action(action), m_deferred(Napi::Promise::Deferred::New(env)) {}
+
+        Napi::Promise Promise() {
+            return this->m_deferred.Promise();
+        }
+
+        void Execute() override {
+            this->m_isDone = WinDriverRunSetup(this->m_action, this->m_error);
+        }
+
+        void OnOK() override {
+            Napi::Env env = this->Env();
+            if (this->m_isDone) {
+                this->m_deferred.Resolve(env.Undefined());
+                return;
+            }
+            Napi::Error error = Napi::Error::New(env, this->m_error.message);
+            error.Set("code", Napi::String::New(env, this->m_error.code));
+            this->m_deferred.Reject(error.Value());
+        }
+
+    private:
+        const wchar_t* m_action;
+        Napi::Promise::Deferred m_deferred;
+        bool m_isDone = false;
+        WinPadError m_error;
+};
+#endif
+
+static Napi::Value RunDriverSetup(const Napi::CallbackInfo& info, const wchar_t* action) {
+    Napi::Env env = info.Env();
+    #if defined(IS_WINDOWS)
+        DriverSetupWorker* worker = new DriverSetupWorker(env, action);
+        Napi::Promise promise = worker->Promise();
+        worker->Queue();
+        return promise;
+    #else
+        (void)action;
+        Napi::Promise::Deferred deferred = Napi::Promise::Deferred::New(env);
+        deferred.Resolve(env.Undefined());
+        return deferred.Promise();
+    #endif
+}
+
+// Gamepad.installDriver(): installs or updates the driver, behind one UAC prompt
+Napi::Value Gamepad::InstallDriver(const Napi::CallbackInfo& info) {
+    return RunDriverSetup(info, L"install");
+}
+
+// Gamepad.uninstallDriver(): removes it again, behind one UAC prompt
+Napi::Value Gamepad::UninstallDriver(const Napi::CallbackInfo& info) {
+    return RunDriverSetup(info, L"uninstall");
+}
+
+
 Napi::Object Gamepad::Init(Napi::Env env, Napi::Object exports) {
     Napi::Object obj = Napi::Object::New(env);
 
     obj.Set(Napi::String::New(env, "list"), Napi::Function::New(env, Gamepad::list));
+    obj.Set(Napi::String::New(env, "getDriverStatus"), Napi::Function::New(env, Gamepad::GetDriverStatus));
+    obj.Set(Napi::String::New(env, "installDriver"), Napi::Function::New(env, Gamepad::InstallDriver));
+    obj.Set(Napi::String::New(env, "uninstallDriver"), Napi::Function::New(env, Gamepad::UninstallDriver));
 
     // object create
     Napi::Function create = Napi::Function::New(env, Gamepad::CreateObject);

@@ -51,7 +51,7 @@ test("every API member is a function", function() {
     const api = {
         "Mouse": ["getX", "getY", "getIcon", "getIconId", "setX", "setY", "setPosition", "buttonDown", "buttonUp", "scrollDown", "scrollUp"],
         "Keyboard": ["keyDown", "keyUp", "isKeySupported", "type", "GetLayout", "SetLayout"],
-        "Gamepad": ["list", "create"],
+        "Gamepad": ["list", "create", "getDriverStatus", "installDriver", "uninstallDriver"],
         "Screen": ["list"]
     };
     for (const [object, members] of Object.entries(api)) {

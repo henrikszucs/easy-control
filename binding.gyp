@@ -16,16 +16,18 @@
                         "src/native/mouse.cpp",
                         "src/native/keyboard.cpp",
                         "src/native/gamepad.cpp",
+                        "src/native/gamepad_win.cpp",
                         "src/native/screen.cpp",
                     ],
                     "include_dirs": [
-                        "<!@(node -p \"require('node-addon-api').include\")",
-                        "<(module_root_dir)/src/native/inc/"
+                        "<!@(node -p \"require('node-addon-api').include\")"
                     ],
                     "libraries": [
                         "advapi32.lib",
                         "shcore.lib",
-                        "<(module_root_dir)/src/native/inc/ViGEm/lib/ViGEmClient.lib"
+                        "cfgmgr32.lib",
+                        "hid.lib",
+                        "shell32.lib"
                     ]
                 }
             ],

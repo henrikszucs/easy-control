@@ -6,3 +6,4 @@ dev/test/*
 !dev/test/resources/
 build_swift/
 tmp/
+build_wdk/

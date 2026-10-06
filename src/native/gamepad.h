@@ -7,14 +7,7 @@
 #include <vector>
 
 #if defined(IS_WINDOWS)
-    // Opaque pointer - the actual type is defined in the .cpp file
-    typedef struct _VIGEM_CLIENT_T* PVIGEM_CLIENT;
-    typedef struct _VIGEM_TARGET_T* PVIGEM_TARGET;
-
-    // Forward declare XUSB_REPORT structure as a pointer
-    struct _XUSB_REPORT;
-    typedef struct _XUSB_REPORT XUSB_REPORT;
-    typedef struct _XUSB_REPORT* PXUSB_REPORT;
+    struct WinPad;  // gamepad_win.h
 #endif
 
 // Button and axis indices follow the W3C Standard Gamepad layout:
@@ -27,6 +20,10 @@ class Gamepad : public Napi::ObjectWrap<Gamepad> {
         static Napi::Object Init(Napi::Env env, Napi::Object exports);
         static Napi::Value list(const Napi::CallbackInfo& info);
         static Napi::Value CreateObject(const Napi::CallbackInfo& info);
+        // the virtual gamepad driver (Windows only; elsewhere nothing to install)
+        static Napi::Value GetDriverStatus(const Napi::CallbackInfo& info);
+        static Napi::Value InstallDriver(const Napi::CallbackInfo& info);
+        static Napi::Value UninstallDriver(const Napi::CallbackInfo& info);
         Gamepad(const Napi::CallbackInfo& info);
         ~Gamepad();
         Napi::Value IsActive(const Napi::CallbackInfo& info);
@@ -41,9 +38,7 @@ class Gamepad : public Napi::ObjectWrap<Gamepad> {
 
         bool m_active = false;
         #if defined(IS_WINDOWS)
-            PVIGEM_CLIENT m_client = nullptr;
-            PVIGEM_TARGET m_pad = nullptr;
-            PXUSB_REPORT m_report = nullptr;
+            WinPad* m_pad = nullptr;
         #elif defined(IS_MACOS)
             int m_gamepad_id = -1;
         #elif defined(IS_LINUX)

@@ -1,12 +1,13 @@
 "use strict";
 
 // The lifecycle tests plug in a real virtual gamepad, so they need the
-// platform's driver (ViGEmBus on Windows, uinput access on Linux, the CoreHID
+// platform's driver (easy-control's own on Windows, uinput access on Linux, the CoreHID
 // entitlement on macOS). Without it they are skipped, and create() is checked
 // to say why instead.
 
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
+import os from "node:os";
 
 import { Gamepad } from "./helpers.js";
 
@@ -37,6 +38,42 @@ test("Gamepad.create throws an Error that says why", { "skip": !skipNoDriver && 
         return error instanceof Error && error.message.length > 0;
     });
     assert.deepEqual(Gamepad.list(), [], "a failed create leaves nothing in the list");
+});
+
+test("getDriverStatus reports the driver", function() {
+    const status = Gamepad.getDriverStatus();
+    assert.deepEqual(Object.keys(status).sort(), ["isInstalled", "isOutdated", "required", "version"]);
+    assert.equal(typeof status["isInstalled"], "boolean");
+    assert.equal(typeof status["isOutdated"], "boolean");
+    if (os.platform() === "win32") {
+        assert.ok(Number.isInteger(status["required"]) && status["required"] >= 1);
+        if (status["isInstalled"]) {
+            assert.ok(Number.isInteger(status["version"]));
+            assert.equal(status["isOutdated"], status["version"] < status["required"]);
+        } else {
+            assert.equal(status["version"], null);
+            assert.equal(status["isOutdated"], false);
+        }
+    } else {
+        // nothing to install elsewhere
+        assert.equal(status["isInstalled"], true);
+        assert.equal(status["isOutdated"], false);
+    }
+});
+
+test("without the driver, create throws EASYCONTROL_DRIVER_MISSING", {
+    "skip": (os.platform() !== "win32" && "the driver is Windows only") ||
+        (Gamepad.getDriverStatus()["isInstalled"] && "the driver is installed")
+}, function() {
+    assert.throws(function() { Gamepad.create(); }, { "code": "EASYCONTROL_DRIVER_MISSING", "message": /installDriver/ });
+});
+
+test("installDriver and uninstallDriver resolve at once where there is nothing to install", {
+    // on Windows they ask for administrator rights, which a test must not
+    "skip": os.platform() === "win32" && "would show a UAC prompt"
+}, async function() {
+    assert.equal(await Gamepad.installDriver(), undefined);
+    assert.equal(await Gamepad.uninstallDriver(), undefined);
 });
 
 test("create plugs in an active gamepad that list reports", { "skip": skipNoDriver }, function() {

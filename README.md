@@ -84,8 +84,8 @@ Keyboard.SetLayout(layout="");  // Set the keyboard language setting, this affec
 ```js
 /*
 --------------------
-On Windows for gamepad support need the latest ViGEm Bus Driver (https://github.com/nefarius/ViGEmBus/releases)
-Note: ViGEmBus is retired by its author (no further updates); it still works, but it is a dependency with no future.
+On Windows the virtual gamepad uses easy-control's own driver, installed once per machine (see "Windows gamepad
+driver" below). Without it Gamepad.create() throws an Error with code "EASYCONTROL_DRIVER_MISSING".
 
 --------------------
 On macOS the virtual gamepad needs macOS 26 and an app signed with the
@@ -165,9 +165,48 @@ Values for a standard Xbox360 controller:
 
 */
 
-
-
+// the Windows driver; on macOS and Linux there is nothing to install, so these report it
+// installed and resolve at once
+const status = Gamepad.getDriverStatus();
+// { isInstalled: true, version: 1, required: 1, isOutdated: false }
+await Gamepad.installDriver();      // installs or updates it, behind one UAC prompt
+await Gamepad.uninstallDriver();    // removes it, behind one UAC prompt
 ```
+
+#### Windows gamepad driver
+
+A virtual gamepad on Windows is two software devices served by easy-control's own user-mode (UMDF 2) driver: one
+XInput reads, so games, browsers, SDL and Windows.Gaming.Input see an Xbox 360 controller, and one HID gamepad for
+DirectInput and Raw Input. A small service, started on demand, plugs them in for applications that are not
+administrators and unplugs them when the application destroys the gamepad or exits. Up to 4 gamepads (XInput's
+limit). Windows 10 1903 or later, x64 and ARM64.
+
+An application can offer the install when it is missing:
+
+```js
+let gamepad;
+try {
+    gamepad = Gamepad.create();
+} catch (error) {
+    if (error.code === "EASYCONTROL_DRIVER_MISSING" || error.code === "EASYCONTROL_DRIVER_OUTDATED") {
+        await Gamepad.installDriver();  // rejects with code EASYCONTROL_SETUP_CANCELLED if UAC is declined
+        gamepad = Gamepad.create();
+    } else {
+        throw error;
+    }
+}
+```
+
+`installDriver()` runs `dist/win32-<x64 or arm64>/gamepad/easy-control-gamepad-setup.ps1 install` as administrator. It copies
+the driver and the service to `%ProgramFiles%\easy-control\gamepad`, creates a code signing certificate for this
+machine, trusts it, signs the driver package with it and deletes its private key, so the certificate can sign
+nothing else; then it installs the driver package and the service. No test-signing mode and no reboot are needed,
+because the driver runs in user mode. Its log is `%ProgramData%\easy-control\gamepad-setup.log`; the script can also
+be run by hand (`install`, `uninstall`, `status`). `uninstallDriver()` removes all of it, the certificate included.
+
+`Gamepad.create()` throws an Error with one of these `code`s: `EASYCONTROL_DRIVER_MISSING`,
+`EASYCONTROL_DRIVER_OUTDATED`, `EASYCONTROL_NO_SLOT` (4 gamepads already), `EASYCONTROL_SERVICE_FAILED`,
+`EASYCONTROL_CREATE_FAILED`.
 
 
 ### Screen
@@ -227,8 +266,9 @@ and other wlroots compositors, ...).
 The tests use the built `dist/`, so build first.
 
 ```
-npm test            # unit tests (node:test), test/unit/
-npm run test:e2e    # end-to-end tests in an Electron window, test/e2e/
+npm test              # unit tests (node:test), test/unit/
+npm run test:e2e      # end-to-end tests in an Electron window, test/e2e/
+npm run test:driver   # Windows: uninstalls and reinstalls the gamepad driver, test/driver/
 ```
 
 `npm test` checks the loaders, every function's results and argument checks, and the gamepad lifecycle. It moves the
@@ -239,8 +279,13 @@ pointer and puts it back, but never clicks, scrolls or presses keys.
 Electron's screen API, and a virtual gamepad against `navigator.getGamepads()`. It takes the mouse and keyboard for
 about 5 seconds; keys are only pressed while its window has the focus.
 
-The gamepad tests need the platform's virtual gamepad support (ViGEmBus on Windows, uinput on Linux, see Gamepad);
+The gamepad tests need the platform's virtual gamepad support (the driver on Windows, uinput on Linux, see Gamepad);
 without it they are skipped, with the reason `Gamepad.create()` gave.
+
+`npm run test:driver` checks `uninstallDriver()` and `installDriver()` for real: after the uninstall no service,
+driver package, certificate, Program Files folder or device of the driver is left, and after the install a gamepad
+works again. Each step asks for administrator rights, so it shows two UAC prompts (three when the driver was not
+installed, as it leaves the machine as it found it). It is not part of `npm test`.
 
 ## Building
 
@@ -251,11 +296,30 @@ npm run build
 
 `npm install` brings `node-gyp`, `node-addon-api` and `esbuild` in as dev dependencies, so none has to be installed globally.
 
-`npm run build` compiles the addon for the running platform, then minifies the JS loaders (`src/easy-control.cjs`, `src/easy-control.mjs`) into `dist/` with esbuild. The native sources are in `src/native/`, the build script of the loaders is `src/build.js`. To rebuild only the loaders, without a C++ toolchain:
+`npm run build` compiles the addon for the running platform, then minifies the JS loaders (`src/easy-control.cjs`, `src/easy-control.mjs`) into `dist/` with esbuild. The native sources are in `src/native/`, the build script of the loaders is `src/build.js`. Another CPU is given with `--arch`; on Windows x64 this builds `dist/win32-arm64/easy-control.node` (needs Visual Studio's "MSVC ARM64 build tools"):
+
+```
+npm run build -- --arch arm64
+```
+
+To rebuild only the loaders, without a C++ toolchain:
 
 ```
 npm run build:js
 ```
+
+The Windows gamepad driver, its service and setup script (`src/native/windows-gamepad/`) are built separately into
+`dist/win32-x64/gamepad/` and `dist/win32-arm64/gamepad/`:
+
+```
+npm run build:gamepad
+```
+
+It needs Visual Studio's C++ tools only, and builds ARM64 too when the "MSVC ARM64 build tools" are installed
+(it says so when it skips it). The parts of the Windows Driver Kit it uses (UMDF headers and libraries, InfVerif,
+Inf2Cat) come from Microsoft's WDK NuGet packages, downloaded once into `build_wdk/`.
+
+Only the results in `dist/` are committed; `build/` and `build_wdk/` hold intermediate files and are ignored.
 
 ### Clean
 ```
@@ -269,7 +333,6 @@ npm run clean
 #### Windows
 - install Visual Studio [https://visualstudio.microsoft.com/vs/community/](https://visualstudio.microsoft.com/vs/community/) and select "Desktop development with C++" bundle
 - install Python 3.6+ [https://apps.microsoft.com/detail/9ncvdn91xzqp](https://apps.microsoft.com/detail/9ncvdn91xzqp)
-- install CMake [https://cmake.org/download/](https://cmake.org/download/)
 
 #### MacOS
 - install Xcode [https://apps.apple.com/us/app/xcode/id497799835](https://apps.apple.com/us/app/xcode/id497799835)
@@ -282,5 +345,3 @@ npm run clean
 ## License
 
 [LGPL-3.0-only](./LICENSE) — see also the referenced [GPL-3.0](./LICENSE.GPL-3.0).
-
-The Windows build bundles [ViGEmClient](https://github.com/nefarius/ViGEmClient) (`dist/win32-x64/ViGEmClient.dll`), MIT License, Copyright (c) 2017-2019 Nefarius Software Solutions e.U. and Contributors; its notice ships beside it as `dist/win32-x64/ViGEmClient.LICENSE`.

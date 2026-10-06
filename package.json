@@ -36,8 +36,10 @@
     "scripts": {
         "build": "node index.js",
         "build:js": "node src/build.js",
+        "build:gamepad": "node src/build-gamepad-win.js",
         "test": "node --test \"test/unit/*.test.js\"",
         "test:e2e": "node test/e2e/run.cjs",
+        "test:driver": "node --test test/driver/driver.test.js",
         "clean": "node index.js -- --uninstall"
     },
     "type": "module",

@@ -31,11 +31,14 @@ const getArg = function(args, argName, isKeyValue=false, isInline=false) {
 };
 
 
-// build function
-const build = async () => {
+// build function; arch is the CPU to build for, the running one unless
+// given (npm run build -- --arch arm64 builds the Windows ARM64 addon on x64)
+const build = async (arch) => {
+    const distDir = "./dist/" + os.platform() + "-" + arch + "/";
+
     // run node-gyp
     await fs.rm("./build/", { "recursive": true, "force": true });  //for safety
-    const ls = spawn("node-gyp", ["configure", "build"], {
+    const ls = spawn("node-gyp", ["configure", "build", "--arch=" + arch], {
         "cwd": process.cwd(),
         "shell": true,
         "stdio": "inherit"
@@ -54,27 +57,25 @@ const build = async () => {
     // copy built files
     process.stdout.write("Copying built files...   ");
     //await fs.rm("./dist/", { "recursive": true, "force": true });   // for dev
-    await fs.mkdir("./dist/" + os.platform() + "-" + os.arch() + "/", { "recursive": true });
+    await fs.mkdir(distDir, { "recursive": true });
 
     if (os.platform() === "win32") {
-        await fs.copyFile("./build/Release/easy-control.node", "./dist/" + os.platform() + "-" + os.arch() + "/easy-control.node");
-        const deps = [
-            "./src/native/inc/ViGEm/lib/ViGEmClient.dll", "./dist/" + os.platform() + "-" + os.arch() + "/ViGEmClient.dll",
-            "./src/native/inc/ViGEm/lib/ViGEmClient.lib", "./dist/" + os.platform() + "-" + os.arch() + "/ViGEmClient.lib",
-            "./src/native/inc/ViGEm/lib/ViGEmClient.LICENSE", "./dist/" + os.platform() + "-" + os.arch() + "/ViGEmClient.LICENSE"
-        ];
-        for (let i = 0; i < deps.length; i += 2) {
-            await fs.cp(deps[i], deps[i + 1], { "recursive": true });
+        await fs.copyFile("./build/Release/easy-control.node", distDir + "easy-control.node");
+        // the gamepad uses easy-control's own driver now (npm run build:gamepad
+        // builds it into dist/<platform>/gamepad); drop the ViGEm client
+        // earlier builds shipped beside the addon
+        for (const stale of ["ViGEmClient.dll", "ViGEmClient.lib", "ViGEmClient.LICENSE"]) {
+            await fs.rm(distDir + stale, { "force": true });
         }
     } else if (os.platform() === "darwin") {
-        await fs.copyFile("./build/Release/easy-control.node", "./dist/" + os.platform() + "-" + os.arch() + "/easy-control.node");
+        await fs.copyFile("./build/Release/easy-control.node", distDir + "easy-control.node");
         // the Swift code is linked into the .node now; drop the libraries
         // earlier builds needed beside it
         for (const stale of ["GamepadImplement.a", "nothing.a"]) {
-            await fs.rm("./dist/" + os.platform() + "-" + os.arch() + "/" + stale, { "force": true });
+            await fs.rm(distDir + stale, { "force": true });
         }
     } else if (os.platform() === "linux") {
-        await fs.copyFile("./build/Release/easy-control.node", "./dist/" + os.platform() + "-" + os.arch() + "/easy-control.node");
+        await fs.copyFile("./build/Release/easy-control.node", distDir + "easy-control.node");
     }
     process.stdout.write("done\n");
 
@@ -140,7 +141,7 @@ const main = async () => {
     if (uninstallFlag) {
         await uninstall();
     } else {
-        await build();
+        await build(getArg(process.argv, "--arch", true) || os.arch());
     }
 };
 main();
