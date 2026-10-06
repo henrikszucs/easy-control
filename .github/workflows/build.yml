@@ -1,6 +1,10 @@
 # Builds the addon for every target, tests it, and - when run by hand with
 # update-dist - opens a pull request that puts the builds into dist/, so the
 # binaries in git always come from here.
+#
+# Every build and test step keeps its output in logs/; when one fails, the
+# last step puts the errors in an annotation, readable on the run's page and
+# through the GitHub API without signing in.
 
 name: build
 
@@ -18,33 +22,57 @@ env:
   # the Electron binary is only needed by the e2e tests, which do not run here
   ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
 
+defaults:
+  run:
+    shell: bash
+
 jobs:
   windows:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: 24
-      - run: npm ci
+      - run: mkdir -p logs && npm ci
       - name: Build the addon (x64 and ARM64) and the gamepad driver
         run: |
-          npm run build
-          npm run build -- --arch arm64
-          npm run build:gamepad
-      - run: npm test
+          set -o pipefail
+          { npm run build && npm run build -- --arch arm64 && npm run build:gamepad; } 2>&1 | tee logs/build.log
+      - name: Test
+        run: |
+          set -o pipefail
+          { npm test && npm run test:types && npm run test:native; } 2>&1 | tee logs/test.log
       # hosted runners run as administrator without UAC prompts, so the
       # driver can be installed and its tests run unattended
-      - run: npm run test:driver
-      - name: Gamepad tests with the driver installed
+      - name: Test the gamepad driver
         run: |
-          node -e "require('./dist/easy-control.cjs').Gamepad.installDriver().then(() => console.log('installed'))"
-          npm test
-      - uses: actions/upload-artifact@v4
+          set -o pipefail
+          npm run test:driver 2>&1 | tee logs/test-driver.log
+      - name: Test with the driver installed
+        run: |
+          set -o pipefail
+          { node -e "require('./dist/easy-control.cjs').Gamepad.installDriver().then(() => console.log('installed'))" && npm test; } 2>&1 | tee logs/test-with-driver.log
+      - name: Report the failure
+        if: failure()
+        shell: pwsh
+        run: |
+          $dir = Join-Path $env:ProgramData "easy-control"
+          foreach ($log in @("gamepad-setup.log", "gamepad-service.log")) {
+              if (Test-Path (Join-Path $dir $log)) { Copy-Item (Join-Path $dir $log) logs/ }
+          }
+          & {
+              "xinputhid.sys: " + (Test-Path "$env:windir\System32\drivers\xinputhid.sys")
+              Get-Service -Name xinputhid, EasyControlGamepad -ErrorAction SilentlyContinue | Format-Table -AutoSize | Out-String
+              Get-PnpDevice -ErrorAction SilentlyContinue | Where-Object { $_.InstanceId -like "*EASYCONTROL*" } |
+                  Format-Table Status, Class, InstanceId, Problem -AutoSize | Out-String -Width 200
+          } *> logs/devices.log
+          node .github/scripts/annotate.js "windows failed" (Get-ChildItem logs/*.log).FullName
+      - uses: actions/upload-artifact@v5
         with:
           name: win32-x64
           path: dist/win32-x64
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: win32-arm64
           path: dist/win32-arm64
@@ -53,40 +81,66 @@ jobs:
     needs: windows
     runs-on: windows-11-arm
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: 24
-      - run: npm ci
-      - uses: actions/download-artifact@v4
+      - run: mkdir -p logs && npm ci
+      - uses: actions/download-artifact@v5
         with:
           name: win32-arm64
           path: dist/win32-arm64
-      - run: npm test
-      - run: npm run test:driver
-      - name: Gamepad tests with the driver installed
+      - name: Test
         run: |
-          node -e "require('./dist/easy-control.cjs').Gamepad.installDriver().then(() => console.log('installed'))"
-          npm test
+          set -o pipefail
+          npm test 2>&1 | tee logs/test.log
+      - name: Test the gamepad driver
+        run: |
+          set -o pipefail
+          npm run test:driver 2>&1 | tee logs/test-driver.log
+      - name: Test with the driver installed
+        run: |
+          set -o pipefail
+          { node -e "require('./dist/easy-control.cjs').Gamepad.installDriver().then(() => console.log('installed'))" && npm test; } 2>&1 | tee logs/test-with-driver.log
+      - name: Report the failure
+        if: failure()
+        shell: pwsh
+        run: |
+          $dir = Join-Path $env:ProgramData "easy-control"
+          foreach ($log in @("gamepad-setup.log", "gamepad-service.log")) {
+              if (Test-Path (Join-Path $dir $log)) { Copy-Item (Join-Path $dir $log) logs/ }
+          }
+          & {
+              "xinputhid.sys: " + (Test-Path "$env:windir\System32\drivers\xinputhid.sys")
+              Get-PnpDevice -ErrorAction SilentlyContinue | Where-Object { $_.InstanceId -like "*EASYCONTROL*" } |
+                  Format-Table Status, Class, InstanceId, Problem -AutoSize | Out-String -Width 200
+          } *> logs/devices.log
+          node .github/scripts/annotate.js "windows-arm failed" (Get-ChildItem logs/*.log).FullName
 
   macos:
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: 24
-      - run: npm ci
+      - run: mkdir -p logs && npm ci
       - name: Build the addon (ARM64, and x64 cross-built)
         run: |
-          npm run build -- --arch x64
-          npm run build
-      - run: npm test
-      - uses: actions/upload-artifact@v4
+          set -o pipefail
+          { npm run build -- --arch x64 && npm run build; } 2>&1 | tee logs/build.log
+      - name: Test
+        run: |
+          set -o pipefail
+          { npm test && npm run test:types && npm run test:native; } 2>&1 | tee logs/test.log
+      - name: Report the failure
+        if: failure()
+        run: node .github/scripts/annotate.js "macos failed" logs/*.log
+      - uses: actions/upload-artifact@v5
         with:
           name: darwin-arm64
           path: dist/darwin-arm64
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: darwin-x64
           path: dist/darwin-x64
@@ -101,23 +155,31 @@ jobs:
           - { runner: ubuntu-24.04-arm, target: linux-arm64, node: 24, upload: true }
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: ${{ matrix.node }}
       - name: Install the X11 libraries and Xvfb
         run: |
           sudo apt-get update
           sudo apt-get install -y libx11-dev libxtst-dev libxfixes-dev libxrandr-dev libxkbcommon0 xvfb xauth x11-xkb-utils
-      - run: npm ci
-      - run: npm run build
+      - run: mkdir -p logs && npm ci
+      - name: Build
+        run: |
+          set -o pipefail
+          npm run build 2>&1 | tee logs/build.log
       - name: Test under Xvfb (X11)
         # nothing else has the keyboard here, so the typing tests may type
         env:
           EASYCONTROL_TYPING_TEST: "1"
-        run: xvfb-run -a -s "-screen 0 1280x1024x24" npm test
+        run: |
+          set -o pipefail
+          { xvfb-run -a -s "-screen 0 1280x1024x24" npm test && npm run test:types && npm run test:native; } 2>&1 | tee logs/test.log
+      - name: Report the failure
+        if: failure()
+        run: node .github/scripts/annotate.js "${{ matrix.target }} (Node ${{ matrix.node }}) failed" logs/*.log
       - if: matrix.upload
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: ${{ matrix.target }}
           path: dist/${{ matrix.target }}
@@ -130,11 +192,11 @@ jobs:
       contents: write
       pull-requests: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: 24
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v5
         with:
           path: dist
       - run: npm ci

@@ -83,7 +83,10 @@ public struct GamepadState {
     var rightTrigger: UInt8
 }
 
-// Delegate to handle HID virtual device callbacks
+// Delegate to handle HID virtual device callbacks. CoreHID's virtual devices
+// are macOS 26 API; the addon itself loads from macOS 10.15 on, where
+// create() just reports it cannot make a gamepad.
+@available(macOS 26.0, *)
 final class GamepadDelegate: HIDVirtualDeviceDelegate {
     func hidVirtualDevice(_ device: HIDVirtualDevice, receivedSetReportRequestOfType type: HIDReportType, id: HIDReportID?, data: Data) throws {
         // Handle set report requests if needed
@@ -99,9 +102,11 @@ final class GamepadDelegate: HIDVirtualDeviceDelegate {
 @objc public class VirtualGamepadDevice: NSObject {
     static let buttonCount = 17
 
-    private var device: HIDVirtualDevice?
+    // a HIDVirtualDevice and its GamepadDelegate, kept untyped as both are
+    // macOS 26 types
+    private var device: Any?
     private var currentState: GamepadState
-    private var delegate: GamepadDelegate?
+    private var delegate: Any?
     // reports go through one stream, to one task, so they reach the system
     // in the order they were made
     private var reports: AsyncStream<Data>.Continuation?
