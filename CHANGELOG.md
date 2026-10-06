@@ -7,7 +7,7 @@
 - **Windows gamepad**: easy-control's own driver replaces ViGEmBus, which was retired in 2023. It is installed once
   per machine with `Gamepad.installDriver()` (one UAC prompt); until then `Gamepad.create()` rejects with
   `code: "EASYCONTROL_DRIVER_MISSING"`. ViGEmBus is no longer used and can be uninstalled. Windows 10 1903 or later,
-  x64 and ARM64.
+  x64 and ARM64; on Windows Server editions, which lack Microsoft's `xinputhid` filter, XInput only.
 - **`Gamepad.create()` returns a Promise** on every platform: plugging a gamepad in takes a moment, which no longer
   blocks the event loop. Its errors carry a `code`.
 - **Node 22 or later** (`engines`); Electron 21 or later.
@@ -38,6 +38,8 @@
 - Linux `Mouse.scrollDown`/`scrollUp` with a negative amount scroll the other way, as on Windows and macOS; a
   non-finite amount throws a `TypeError` everywhere instead of scrolling 0.
 - Linux X11: when no output is set as primary (Xvfb, some desktops), the screen at 0,0 is reported primary.
+- macOS `Keyboard.isKeySupported("KeyA")` was false: the A key's code is 0, which counted as "no key".
+- macOS `Mouse.getX`/`getY` right after a move read the previous position; the pointer is now there at once.
 - A build older than its loader is reported in `Platform.loadError` instead of failing on first use.
 
 ### Other

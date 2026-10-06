@@ -1,7 +1,7 @@
 # Plan: fixes and additions from the library review
 
-Status: phases 1-5 implemented, 2026-10-06; phase 6 (release) open. Covers the review of 2026-10-06, as the
-maintainer scoped it. When done, move this file to `dev/plans/done/`.
+Status: done, 2026-10-06. Covers the review of 2026-10-06, as the maintainer scoped it. What remains of the
+release is done on GitHub: merging `ci-fix`, the `update-dist` pull request, and the `v0.10.0` tag.
 
 ## Progress
 
@@ -10,19 +10,20 @@ Verified:
   Electron's to the pixel), `test:driver` (uninstall, install, service log, idle stop and restart).
 - Linux x64 X11, in Docker under Xvfb: build, `npm ci`, `npm test` with `EASYCONTROL_TYPING_TEST=1` (the AltGr
   typing tests with a Hungarian layout), `test:types`, `test:native`.
-- Windows ARM64: built (addon and driver package), not run.
+- CI (`ci-fix` branch): every target built; tests green on Windows x64 and ARM64 (with the driver installed),
+  macOS (ARM64 runner, x64 cross-built), Linux x64 on Node 22 and 24, Linux ARM64.
 
-Not verified, waiting for CI or a machine:
-- macOS: nothing compiled or run - `access.cpp` (Accessibility), screen `id`/`name`, `getIcon()` at the backing
-  scale, the Swift `-target` for `darwin-x64`.
-- Linux Wayland: the AltGr and `unicodeFallback` path of `type()` (needs a compositor and uinput), output names.
-- Linux ARM64, Windows ARM64 running, and the CI workflow itself, which has not run yet.
-
-Open for phase 6: the committed `darwin-arm64` and `linux-x64` builds predate this work; the loader reports them as
-"older than its loader" until the CI pull request replaces them.
+Not verified, as no CI runner or dev machine can:
+- the Linux Wayland path of `type()` (AltGr, `unicodeFallback`) and Wayland output names: needs a compositor
+  and uinput;
+- the macOS virtual gamepad (macOS 26 and an entitled app) and the Accessibility prompt of
+  `requestInputAccess()` (a person has to answer it).
 
 Found on the way and fixed: Linux X11 reported no primary screen when none is set (Xvfb); the Linux keymap
 lookup missed characters held as legacy keysyms (Hungarian `ő`); the loader failed on a build older than itself.
+CI found: the Swift part used macOS 26 types outside availability checks once built for 10.15; macOS
+`isKeySupported("KeyA")` was false (key code 0); macOS read the pointer before a posted move landed; Windows Server
+has no `xinputhid.sys` (the XUSB device now goes without the filter there); uninstall left phantom HID devices.
 
 Only Windows can be built and tested on the dev machine. macOS and Linux changes are checked through CI (phase 2),
 so CI comes before the native work on those platforms.

@@ -243,7 +243,9 @@ A virtual gamepad on Windows is two software devices served by easy-control's ow
 XInput reads, so games, browsers, SDL and Windows.Gaming.Input see an Xbox 360 controller, and one HID gamepad for
 DirectInput and Raw Input. A small service, started on demand, plugs them in for applications that are not
 administrators and unplugs them when the application destroys the gamepad or exits. Up to 4 gamepads (XInput's
-limit). Windows 10 1903 or later, x64 and ARM64.
+limit). Windows 10 1903 or later, x64 and ARM64. Windows Server editions lack Microsoft's Xbox controller filter
+(`xinputhid.sys`): there the gamepad works for XInput, but Windows.Gaming.Input - and so Chromium and Electron -
+do not see it.
 
 An application can offer the install when it is missing:
 
@@ -352,7 +354,8 @@ What the operating systems do not let a program do, or do only in part.
   as mouse movement: many games and pointer-locked web pages. Clicks, scrolling and keys do reach them.
 - **`Keyboard.type`** sends the characters as Unicode packets, which some games and remote-desktop clients ignore;
   `keyDown`/`keyUp` reach them.
-- **Gamepads**: at most 4 (XInput's limit); kernel-level anti-cheat may refuse virtual ones.
+- **Gamepads**: at most 4 (XInput's limit); kernel-level anti-cheat may refuse virtual ones; on Windows Server
+  editions XInput only (see "Windows gamepad driver").
 
 ### macOS
 - Input needs the **Accessibility** permission (System Settings > Privacy & Security > Accessibility) for the app
