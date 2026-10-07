@@ -11,12 +11,8 @@
 #include <thread>
 #include <vector>
 
+#include "platform.h"
 #include "windows-gamepad/common/easycontrol_pad.h"
-
-#pragma comment(lib, "cfgmgr32.lib")
-#pragma comment(lib, "hid.lib")
-#pragma comment(lib, "advapi32.lib")
-#pragma comment(lib, "shell32.lib")
 
 // how long a new pad's devices may take to come up
 static const DWORD DEVICE_TIMEOUT_MS = 10000;
@@ -42,20 +38,6 @@ struct WinPad {
     void* outputContext = nullptr;
 };
 
-static std::string WinErrorText(DWORD code) {
-    char* text = nullptr;
-    FormatMessageA(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
-        nullptr, code, MAKELANGID(LANG_ENGLISH, SUBLANG_ENGLISH_US), (LPSTR)&text, 0, nullptr);
-    std::string result = text != nullptr ? text : "";
-    LocalFree(text);
-    while (!result.empty() && (result.back() == '\n' || result.back() == '\r' || result.back() == ' ' || result.back() == '.')) {
-        result.pop_back();
-    }
-    char number[16];
-    snprintf(number, sizeof(number), " (0x%08X)", (unsigned)code);
-    return result + number;
-}
-
 static void SetError(WinPadError& error, const char* code, const std::string& message) {
     error.code = code;
     error.message = message;
@@ -69,14 +51,9 @@ static void SetError(WinPadError& error, const char* code, const std::string& me
 static std::wstring ModuleFolder();
 
 // the version of the driver files beside the addon (gamepad/version.json,
-// {"version": N}); 0 when they are missing. Read once: they do not change
-// while the addon is loaded.
-static int BundledVersion() {
-    static int version = -1;
-    if (version >= 0) {
-        return version;
-    }
-    version = 0;
+// {"version": N}); 0 when they are missing
+static int ReadBundledVersion() {
+    int version = 0;
     FILE* file = _wfopen((ModuleFolder() + L"\\gamepad\\version.json").c_str(), L"rb");
     if (file == nullptr) {
         return version;
@@ -90,6 +67,13 @@ static int BundledVersion() {
     if (colon != nullptr) {
         version = (int)strtol(colon + 1, nullptr, 10);
     }
+    return version;
+}
+
+// read once (and once only, whichever thread asks first): the files do not
+// change while the addon is loaded
+static int BundledVersion() {
+    static const int version = ReadBundledVersion();
     return version;
 }
 
@@ -188,10 +172,41 @@ bool WinDriverRunSetup(const wchar_t* action, bool force, WinPadError& error) {
 // the service
 //
 
-// connects to the service's pipe, starting the service first if needed
-static HANDLE ConnectToService(WinPadError& error) {
-    const ULONGLONG end = GetTickCount64() + SERVICE_TIMEOUT_MS;
-    bool isStarted = false;
+// How often a missing pipe starts the service again. The service stops by
+// itself when idle and reports RUNNING until it has stopped, so a start in
+// that time is answered ERROR_SERVICE_ALREADY_RUNNING and does nothing: once
+// it has gone, the next start brings it back.
+static const DWORD SERVICE_RESTART_MS = 500;
+
+// asks the service to start: it starts on demand, and signed-in users may
+// start it. True when it starts or runs (or is stopping, see above), or the
+// service database is busy - both waited out by the caller; false, with the
+// error, when it cannot be started (not installed, disabled, ...).
+static bool StartGamepadService(DWORD& startError) {
+    SC_HANDLE manager = OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CONNECT);
+    SC_HANDLE service = manager != nullptr ? OpenServiceW(manager, EASYCONTROL_SERVICE_NAME, SERVICE_START) : nullptr;
+    bool isOk = false;
+    if (service == nullptr) {
+        startError = GetLastError();
+    } else if (StartServiceW(service, 0, nullptr)) {
+        isOk = true;
+    } else {
+        startError = GetLastError();
+        isOk = startError == ERROR_SERVICE_ALREADY_RUNNING || startError == ERROR_SERVICE_DATABASE_LOCKED;
+    }
+    if (service != nullptr) {
+        CloseServiceHandle(service);
+    }
+    if (manager != nullptr) {
+        CloseServiceHandle(manager);
+    }
+    return isOk;
+}
+
+// connects to the service's pipe by `end` (GetTickCount64), starting the
+// service if needed
+static HANDLE ConnectToService(ULONGLONG end, WinPadError& error) {
+    ULONGLONG nextStart = 0;
     for (;;) {
         HANDLE pipe = CreateFileW(EASYCONTROL_PIPE_NAME, GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_EXISTING,
             SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION, nullptr);
@@ -209,24 +224,13 @@ static HANDLE ConnectToService(WinPadError& error) {
             WaitNamedPipeW(EASYCONTROL_PIPE_NAME, 1000);
             continue;
         }
-        if (code == ERROR_FILE_NOT_FOUND && !isStarted) {
-            // not running: it starts on demand, and signed-in users may start it
-            SC_HANDLE manager = OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CONNECT);
-            SC_HANDLE service = manager != nullptr ? OpenServiceW(manager, EASYCONTROL_SERVICE_NAME, SERVICE_START) : nullptr;
-            const bool isOk = service != nullptr &&
-                (StartServiceW(service, 0, nullptr) || GetLastError() == ERROR_SERVICE_ALREADY_RUNNING);
-            const DWORD startError = GetLastError();
-            if (service != nullptr) {
-                CloseServiceHandle(service);
-            }
-            if (manager != nullptr) {
-                CloseServiceHandle(manager);
-            }
-            if (!isOk) {
+        if (code == ERROR_FILE_NOT_FOUND && GetTickCount64() >= nextStart) {
+            DWORD startError = 0;
+            if (!StartGamepadService(startError)) {
                 SetError(error, "EASYCONTROL_SERVICE_FAILED", "Starting the gamepad service failed: " + WinErrorText(startError));
                 return INVALID_HANDLE_VALUE;
             }
-            isStarted = true;
+            nextStart = GetTickCount64() + SERVICE_RESTART_MS;
         }
         Sleep(50);
     }
@@ -346,18 +350,36 @@ WinPad* WinPadCreate(WinPadError& error) {
     }
 
     WinPad* pad = new WinPad();
-    pad->pipe = ConnectToService(error);
-    if (pad->pipe == INVALID_HANDLE_VALUE) {
-        delete pad;
-        return nullptr;
-    }
-
+    const ULONGLONG serviceEnd = GetTickCount64() + SERVICE_TIMEOUT_MS;
     EASYCONTROL_PIPE_REQUEST request = { EASYCONTROL_PIPE_MAGIC, EASYCONTROL_PAD_VERSION, EASYCONTROL_PIPE_CREATE };
     EASYCONTROL_PIPE_RESPONSE response = {};
-    DWORD read = 0;
-    if (!TransactNamedPipe(pad->pipe, &request, sizeof(request), &response, sizeof(response), &read, nullptr) ||
-            read != sizeof(response) || response.Magic != EASYCONTROL_PIPE_MAGIC) {
-        SetError(error, "EASYCONTROL_SERVICE_FAILED", "The gamepad service did not answer: " + WinErrorText(GetLastError()));
+    for (bool isRetry = false; ; isRetry = true) {
+        pad->pipe = ConnectToService(serviceEnd, error);
+        if (pad->pipe == INVALID_HANDLE_VALUE) {
+            delete pad;
+            return nullptr;
+        }
+        DWORD read = 0;
+        if (TransactNamedPipe(pad->pipe, &request, sizeof(request), &response, sizeof(response), &read, nullptr)) {
+            if (read != sizeof(response) || response.Magic != EASYCONTROL_PIPE_MAGIC) {
+                SetError(error, "EASYCONTROL_SERVICE_FAILED", read != sizeof(response)
+                    ? "The gamepad service answered " + std::to_string(read) + " bytes, expected " + std::to_string(sizeof(response))
+                    : std::string("The gamepad service's answer is not of this protocol (wrong magic number)"));
+                WinPadDestroy(pad);
+                return nullptr;
+            }
+            break;
+        }
+        // The service's idle stop closes a connection made just as it
+        // decides to stop: connect again (starting it again) once.
+        const DWORD code = GetLastError();
+        const bool isClosed = code == ERROR_PIPE_NOT_CONNECTED || code == ERROR_BROKEN_PIPE || code == ERROR_NO_DATA;
+        if (isClosed && !isRetry && GetTickCount64() < serviceEnd) {
+            CloseHandle(pad->pipe);
+            pad->pipe = INVALID_HANDLE_VALUE;
+            continue;
+        }
+        SetError(error, "EASYCONTROL_SERVICE_FAILED", "The gamepad service did not answer: " + WinErrorText(code));
         WinPadDestroy(pad);
         return nullptr;
     }

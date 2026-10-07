@@ -1,4 +1,5 @@
 #include "access.h"
+#include "args.h"
 #include "platform.h"
 
 #if defined(IS_WINDOWS)
@@ -147,8 +148,8 @@ Napi::Value InputAccess::getInputBlock(const Napi::CallbackInfo& info) {
 
 Napi::Object InputAccess::Init(Napi::Env env, Napi::Object exports) {
     Napi::Object obj = Napi::Object::New(env);
-    obj.Set(Napi::String::New(env, "hasInputAccess"), Napi::Function::New(env, InputAccess::hasInputAccess));
-    obj.Set(Napi::String::New(env, "requestInputAccess"), Napi::Function::New(env, InputAccess::requestInputAccess));
-    obj.Set(Napi::String::New(env, "getInputBlock"), Napi::Function::New(env, InputAccess::getInputBlock));
+    SetFunction(env, obj, "hasInputAccess", InputAccess::hasInputAccess);
+    SetFunction(env, obj, "requestInputAccess", InputAccess::requestInputAccess);
+    SetFunction(env, obj, "getInputBlock", InputAccess::getInputBlock);
     return obj;
 }

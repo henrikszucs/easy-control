@@ -9,33 +9,10 @@ import os from "node:os";
 import process from "node:process";
 import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
+import { parseArgs } from "node:util";
 import fs from "node:fs/promises";
 
 const require = createRequire(import.meta.url);
-
-
-// search in parameters
-const getArg = function(args, argName, isKeyValue=false, isInline=false) {
-    for (let i = 0, length=args.length; i < length; i++) {
-        const arg = args[i];
-        if (isKeyValue) {
-            if (isInline) {
-                if (arg.startsWith(argName + "=")) {
-                    return arg.slice(argName.length + 1);
-                }
-            } else {
-                if (arg === argName) {
-                    return args[i + 1];
-                }
-            }
-        } else {
-            if (arg === argName) {
-                return true;
-            }
-        }
-    }
-    return undefined;
-};
 
 
 // build function; arch is the CPU to build for, the running one unless
@@ -54,7 +31,10 @@ const build = async (arch) => {
         "cwd": process.cwd(),
         "stdio": "inherit"
     });
-    let code = await new Promise((resolve) => {
+    const code = await new Promise((resolve, reject) => {
+        ls.on("error", (error) => {
+            reject(new Error("Build process could not be started: " + error.message));
+        });
         ls.on("close", (code) => {
             console.log(`Building end with: ${code}`);
             resolve(code);
@@ -68,25 +48,7 @@ const build = async (arch) => {
     // copy built files
     process.stdout.write("Copying built files...   ");
     await fs.mkdir(distDir, { "recursive": true });
-
-    if (os.platform() === "win32") {
-        await fs.copyFile("./build/Release/easy-control.node", distDir + "easy-control.node");
-        // the gamepad uses easy-control's own driver now (npm run build:gamepad
-        // builds it into dist/<platform>/gamepad); drop the ViGEm client
-        // earlier builds shipped beside the addon
-        for (const stale of ["ViGEmClient.dll", "ViGEmClient.lib", "ViGEmClient.LICENSE"]) {
-            await fs.rm(distDir + stale, { "force": true });
-        }
-    } else if (os.platform() === "darwin") {
-        await fs.copyFile("./build/Release/easy-control.node", distDir + "easy-control.node");
-        // the Swift code is linked into the .node now; drop the libraries
-        // earlier builds needed beside it
-        for (const stale of ["GamepadImplement.a", "nothing.a"]) {
-            await fs.rm(distDir + stale, { "force": true });
-        }
-    } else if (os.platform() === "linux") {
-        await fs.copyFile("./build/Release/easy-control.node", distDir + "easy-control.node");
-    }
+    await fs.copyFile("./build/Release/easy-control.node", distDir + "easy-control.node");
     process.stdout.write("done\n");
 
     // minify the JS loaders into dist
@@ -119,10 +81,17 @@ const clean = async (isAll) => {
 
 // start main function
 const main = async () => {
-    if (getArg(process.argv, "--clean", false)) {
-        await clean(getArg(process.argv, "--all", false) || false);
+    const { values } = parseArgs({
+        "options": {
+            "clean": { "type": "boolean", "default": false },
+            "all": { "type": "boolean", "default": false },
+            "arch": { "type": "string", "default": os.arch() }
+        }
+    });
+    if (values["clean"]) {
+        await clean(values["all"]);
     } else {
-        await build(getArg(process.argv, "--arch", true) || os.arch());
+        await build(values["arch"]);
     }
 };
 main();

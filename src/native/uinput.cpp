@@ -230,6 +230,13 @@ bool PointerMoveBy(int dx, int dy, std::string& error) {
     if (!EnsureMouse(error)) {
         return false;
     }
+    // an axis that does not move is left out, as a mouse leaves it out
+    if (dy == 0) {
+        return Send(mouseFd, {Event(EV_REL, REL_X, dx)}, error);
+    }
+    if (dx == 0) {
+        return Send(mouseFd, {Event(EV_REL, REL_Y, dy)}, error);
+    }
     return Send(mouseFd, {Event(EV_REL, REL_X, dx), Event(EV_REL, REL_Y, dy)}, error);
 }
 

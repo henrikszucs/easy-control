@@ -1,14 +1,35 @@
 # Plan: fixes from the third library review
 
-Status: not started. Covers the review of 2026-10-07 (bugs, efficiency, simplification) and one addition asked for
+Status: phase 1 done; phases 2-4 to do. Covers the review of 2026-10-07 (bugs, efficiency, simplification) and one addition asked for
 with it: `Mouse.moveByX(dx)` / `Mouse.moveByY(dy)`. Target release: 0.13.0 (new API, no breaking change except
 the `SetLayout` ones in Decisions 4, gamepad indices that are not integers (item 8) and the uniform argument error
 messages (14)).
 
 ## Progress
 
-Nothing started yet. Filled in as phases are done: what was verified where, measurements (11, 12), what could not
-be verified.
+Filled in as phases are done: what was verified where, measurements (11, 12), what could not be verified.
+
+2026-10-07, phase 1 done (13, 1, 6, 8, 11, 10's Windows part, 14's shared part; also moved ahead: `RequireDisplay`
+into `platform.h` (14, Linux part) and the `getIconId` docs (10, Linux part)).
+
+- Windows x64 (dev machine, driver 3 installed): build without warnings, `npm test` 67 pass (9 skipped: no secure
+  desktop showing, Linux/X11/Wayland only, the driver-missing and UAC cases), `test:types`, `test:native` (the new
+  `release_all_test.cpp` 8/8), `test:e2e` 19/19 (the new `moveByX`/`moveByY` test with its kept-fraction steps;
+  `releaseAll` with three keys and two buttons held), `test:driver` run elevated 9/9 (the two new ones: ten
+  `create()` calls right after `sc stop`, 2.7 s for all ten; a disabled service rejects in 0.8 s; the start type
+  put back).
+- Linux x64 X11 in Docker (node:24-bookworm, privileged, uinput) under Xvfb: build without warnings in our
+  sources, `npm test` 67 pass, `test:types`, `test:native`.
+- 11, measured on the dev machine (1 monitor, 1280x1024 at 125%), 10000 calls each, before / after one layout per
+  call: `getX` 2.0 / 2.0 µs, `getX` + `getY` 4.0 / 4.0 µs, `getPosition` - / 2.5 µs, `setPosition` 6.5 / 7.4-7.9 µs
+  (noise between runs), `setX` 8.5 / 7.5 µs. Far below the 20 µs of step 3, which is therefore not done: no layout is
+  kept between calls (Decisions 8). Each further monitor adds a `GetMonitorInfo` and a `GetDpiForMonitor`; a
+  machine with several monitors was not at hand to measure.
+- Messages: the argument helpers' are "Expected N argument(s)", "Argument N must be a string / a boolean / a
+  finite number / an integer", "Argument 1 must not be empty"; the button name's "Argument 1 must be 'left',
+  'middle', 'right', 'back' or 'forward'". The gamepad's range messages and `setState`'s `buttons[i]` ones stay.
+- Not verified: the by-hand checks of 1 and 10 (lock screen, an elevated foreground window), Wayland's
+  `PointerMoveBy` change (no runner), macOS (CI builds it at the next push).
 
 2026-10-07: the plan was checked against the code (no change made to the code). Every line reference and every
 claim about today's behaviour held; corrected from that check: the exit hook (1), the Wayland `PointerMoveBy` change

@@ -80,6 +80,7 @@ files, which the driver setup must find as real files:
 ```js
 const x = Mouse.getX();
 const y = Mouse.getY();
+const { x, y } = Mouse.getPosition();  // both from one read: the same moment, and cheaper than the two calls
 // throw when the position cannot be read (Windows: while the secure desktop shows, code
 // "EASYCONTROL_INPUT_BLOCKED")
 
@@ -98,7 +99,8 @@ While the pointer is hidden: width and height 0, data empty. Windows draws the i
 white cursors (the text I-beam) by the screen under them; here they are mid-grey.
 */
 
-const iconId = Mouse.getIconId();   // a number that changes when the pointer shape changes, 0 while it is hidden.
+const iconId = Mouse.getIconId();   // a number that changes when the pointer shape changes, 0 while it is hidden
+                                    // on Windows and macOS (Linux cannot tell: XFixes reports no hidden state).
                                     // Cheap on Windows and Linux: poll it and call getIcon only when it changes.
                                     // On macOS it is a hash of the picture, about as costly as getIcon.
 
@@ -111,10 +113,14 @@ Mouse.moveBy(dx, dy);
 // and games read, which setPosition never makes. The system's pointer speed and acceleration apply to the
 // visible pointer, so the distance in pixels may differ. Fractions are added to the next call; at most
 // 100000 either way.
+Mouse.moveByX(dx);      // moveBy(dx, 0)
+Mouse.moveByY(dy);      // moveBy(0, dy); each leaves the other axis's kept fraction as it is
 
 Mouse.buttonDown(btn);  // "right" | "middle" | "left" | "back" | "forward"
 Mouse.buttonUp(btn);    // "right" | "middle" | "left" | "back" | "forward"
-Mouse.releaseAll();     // releases every button buttonDown pressed and buttonUp did not release yet
+Mouse.releaseAll();     // releases every button buttonDown pressed and buttonUp did not release yet. It tries
+                        // each; those it could not release (Windows: the secure desktop) stay held for the next
+                        // call, and it throws the first failure.
 
 Mouse.scrollDown(amount, isHorizontal);    // down, or right when isHorizontal is true
 Mouse.scrollUp(amount, isHorizontal);      // up, or left when isHorizontal is true
@@ -139,7 +145,8 @@ const isKeySupported = Keyboard.isKeySupported(code);  // true when this platfor
 Keyboard.keyDown(code);
 Keyboard.keyUp(code);
 Keyboard.releaseAll();      // releases every key keyDown pressed and keyUp did not release yet,
-                            // e.g. when the remote side of a session is gone
+                            // e.g. when the remote side of a session is gone; as Mouse.releaseAll, it tries
+                            // each, keeps those it could not release and throws the first failure
 // keyDown/keyUp press a key by its place on the keyboard (its scan code), the same key whatever the layout;
 // the layout only decides which character that key makes. "KeyY" is the key right of "KeyT": it types "y"
 // on a US layout and "z" on a German or Hungarian one.
@@ -169,6 +176,9 @@ Keyboard.setLayout(layout);
 //   Linux:   the XKB group name, e.g. "English (US)"; SetLayout throws on Wayland
 // SetLayout switches it: on Windows for the window the input goes to, on macOS the input source, on X11 the XKB
 // group. It changes what characters keys make, so what keyDown/keyUp type - not which keys they press.
+// Only to a layout the user has: another throws "Layout not found" (Windows does not add it to the user's
+// languages). On Windows it throws "EASYCONTROL_INPUT_BLOCKED" when no window has the input (the secure
+// desktop), and an Error when that window does not take the request (an elevated one).
 
 ```
 
@@ -408,13 +418,14 @@ and other wlroots compositors, ...).
   output's pixels per logical pixel, and the output at 0,0 is reported as primary - Wayland has no primary output.
   libwayland-client is loaded at run time, so it is no build dependency; without it XRandR (XWayland) is used.
 - `Mouse.setPosition/setX/setY` move an absolute pointer over the bounding box of all screens.
-- `Mouse.moveBy` goes through a third virtual device, "easy-control virtual mouse", a relative one: a compositor
-  gives a locked pointer only relative motion.
-- `Mouse.getX/getY` - Wayland tells no client where the pointer is: they return the position last set through
-  easy-control, and XWayland's idea of it before the first move and after `moveBy` (the compositor applies
+- `Mouse.moveBy` and `moveByX/moveByY` go through a third virtual device, "easy-control virtual mouse", a relative
+  one: a compositor gives a locked pointer only relative motion. An axis that does not move is left out of the event.
+- `Mouse.getX/getY/getPosition` - Wayland tells no client where the pointer is: they return the position last set
+  through easy-control, and XWayland's idea of it before the first move and after `moveBy` (the compositor applies
   acceleration, so where that leaves the pointer is not known).
 - `Mouse.scroll` sends high-resolution wheel events (Linux 5.0 and later read them).
-- `Mouse.getIcon/getIconId` see only the pointer shapes of XWayland applications.
+- `Mouse.getIcon/getIconId` see only the pointer shapes of XWayland applications. `getIconId` is never 0 for a
+  hidden pointer on Linux (X11 included): XFixes reports no hidden state.
 - `Keyboard.keyDown/keyUp` press physical keys, as on the other platforms.
 - `Keyboard.type` presses the keys of the current layout, read from XWayland, so it needs XWayland. A character the
   layout has no key for is skipped, and the call throws naming them once the rest is typed - the compositor's keymap

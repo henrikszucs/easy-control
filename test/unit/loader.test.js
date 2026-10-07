@@ -15,8 +15,8 @@ const pkg = JSON.parse(await fs.readFile(path.join(rootPath, "package.json"), "u
 
 // every function of each object, as the README and easy-control.d.ts give them
 const API = {
-    "Mouse": ["getX", "getY", "getIcon", "getIconId", "setX", "setY", "setPosition", "moveBy",
-        "buttonDown", "buttonUp", "releaseAll", "scrollDown", "scrollUp", "scroll"],
+    "Mouse": ["getX", "getY", "getPosition", "getIcon", "getIconId", "setX", "setY", "setPosition",
+        "moveBy", "moveByX", "moveByY", "buttonDown", "buttonUp", "releaseAll", "scrollDown", "scrollUp", "scroll"],
     "Keyboard": ["keyDown", "keyUp", "releaseAll", "isKeySupported", "type", "getLockState",
         "getLayout", "setLayout", "GetLayout", "SetLayout"],
     "Gamepad": ["list", "create", "getDriverStatus", "installDriver", "uninstallDriver"],
@@ -73,6 +73,51 @@ test("every API member is a function, and there are no others", function() {
     }
 });
 
+test("the addon's functions carry their names, for stack traces", function() {
+    for (const [object, members] of Object.entries(API)) {
+        if (object === "Platform") {
+            continue;
+        }
+        for (const member of members) {
+            // getLayout and GetLayout are one function
+            assert.equal(Control[object][member].name.toLowerCase(), member.toLowerCase(), object + "." + member);
+        }
+    }
+});
+
+// runs a script in a child Node, which ends when the script does; its stdout
+const runChild = function(lines) {
+    return execFileSync(process.execPath, ["-e", lines.join("\n")], { "encoding": "utf8" });
+};
+const loaderPath = JSON.stringify(path.join(distPath, "easy-control.cjs"));
+
+test("at exit, buttons are released even when releasing the keys throws", function() {
+    // a stand-in addon: its keys cannot be released, its buttons say so when released
+    const output = runChild([
+        "const fs = require('node:fs');",
+        "require.extensions['.node'] = function(module) {",
+        "    module.exports = {",
+        "        Platform: { getInputBlock() { return null; }, hasInputAccess() { return true; } },",
+        "        Keyboard: { releaseAll() { throw new Error('blocked'); } },",
+        "        Mouse: { releaseAll() { fs.writeSync(1, 'buttons released'); } },",
+        "        Gamepad: {}, Screen: {}",
+        "    };",
+        "};",
+        "require(" + loaderPath + ");"
+    ]);
+    assert.equal(output, "buttons released");
+});
+
+test("at exit, the addon's own releaseAll runs, not what an app put in its place", function() {
+    const output = runChild([
+        "const fs = require('node:fs');",
+        "const control = require(" + loaderPath + ");",
+        "control.Keyboard.releaseAll = function() { fs.writeSync(1, 'replacement called'); };",
+        "control.Mouse.releaseAll = function() { fs.writeSync(1, 'replacement called'); };"
+    ]);
+    assert.equal(output, "");
+});
+
 test("Platform describes the running target", function() {
     assert.equal(Platform.target, os.platform() + "-" + os.arch());
     assert.deepEqual([...Platform.supportedTargets],
@@ -123,6 +168,9 @@ test("on an unsupported target the import works and every function says why", fu
         "    hasInputAccess: c.Platform.hasInputAccess(), target: c.Platform.target };",
         "try { c.Mouse.getX(); } catch (error) { result.mouseCode = error.code; result.mouseMessage = error.message; }",
         "try { c.Platform.getInputBlock(); } catch (error) { result.blockCode = error.code; }",
+        // an app's test double replaces a stand-in's function, as on the addon's objects
+        "c.Mouse.getX = function() { return 42; };",
+        "result.replacedX = c.Mouse.getX();",
         "c.Gamepad.create().catch((error) => { result.gamepadCode = error.code; })",
         "    .then(() => c.Platform.requestInputAccess()).then((access) => { result.requestInputAccess = access;",
         "    console.log(JSON.stringify(result)); });"
@@ -136,5 +184,6 @@ test("on an unsupported target the import works and every function says why", fu
     assert.equal(result.mouseCode, "EASYCONTROL_UNSUPPORTED_PLATFORM");
     assert.equal(result.mouseMessage, result.loadError);
     assert.equal(result.blockCode, "EASYCONTROL_UNSUPPORTED_PLATFORM");
+    assert.equal(result.replacedX, 42, "a stand-in's function can be replaced");
     assert.equal(result.gamepadCode, "EASYCONTROL_UNSUPPORTED_PLATFORM", "a Promise function rejects rather than throws");
 });

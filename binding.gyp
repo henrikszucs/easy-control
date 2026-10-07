@@ -8,28 +8,33 @@
                 ["target_arch=='x64'", { "swift_arch": "x86_64" }, { "swift_arch": "arm64" }]
             ]
         },
+        # what every platform builds; each condition adds its own
+        "defines": ["NAPI_DISABLE_CPP_EXCEPTIONS"],
+        "sources": [
+            "src/native/main.cpp",
+            "src/native/mouse.cpp",
+            "src/native/keyboard.cpp",
+            "src/native/gamepad.cpp",
+            "src/native/screen.cpp",
+            "src/native/access.cpp"
+        ],
+        "include_dirs": [
+            "<!@(node -p \"require('node-addon-api').include\")"
+        ],
         "conditions": [
             [
                 "OS=='win'",
                 {
-                    "defines": ["IS_WINDOWS", "NAPI_DISABLE_CPP_EXCEPTIONS"],
+                    "defines": ["IS_WINDOWS"],
                     "msvs_settings": {
                         "VCCLCompilerTool": {
                             "WarningLevel": "3"
                         }
                     },
                     "sources": [
-                        "src/native/main.cpp",
-                        "src/native/mouse.cpp",
-                        "src/native/keyboard.cpp",
-                        "src/native/gamepad.cpp",
-                        "src/native/gamepad_win.cpp",
-                        "src/native/screen.cpp",
-                        "src/native/access.cpp",
+                        "src/native/gamepad_win.cpp"
                     ],
-                    "include_dirs": [
-                        "<!@(node -p \"require('node-addon-api').include\")"
-                    ],
+                    # every library the addon links, in one place
                     "libraries": [
                         "advapi32.lib",
                         "shcore.lib",
@@ -42,7 +47,7 @@
             [
                 "OS == 'mac'",
                 {
-                    "defines": ["IS_MACOS", "NAPI_DISABLE_CPP_EXCEPTIONS"],
+                    "defines": ["IS_MACOS"],
                     "actions": [
                         {
                             "action_name": "build_swift",
@@ -65,16 +70,9 @@
                         }
                     ],
                     "sources": [
-                        "src/native/main.cpp",
-                        "src/native/mouse.cpp",
-                        "src/native/keyboard.cpp",
-                        "src/native/gamepad.cpp",
-                        "src/native/screen.cpp",
-                        "src/native/access.cpp",
                         "src/native/GamepadBridge.m"
                     ],
                     "include_dirs": [
-                        "<!@(node -p \"require('node-addon-api').include\")",
                         "src/native",
                         "build_swift"
                     ],
@@ -109,26 +107,15 @@
             [
                 "OS == 'linux'",
                 {
-                    "defines": ["IS_LINUX", "NAPI_DISABLE_CPP_EXCEPTIONS"],
+                    "defines": ["IS_LINUX"],
                     "cflags": [
                         "-Wall",
                         "-Wparentheses",
-                        "-Winline",
-                        "-Wbad-function-cast",
                         "-Wdisabled-optimization"
                     ],
                     "sources": [
-                        "src/native/main.cpp",
-                        "src/native/mouse.cpp",
-                        "src/native/keyboard.cpp",
-                        "src/native/gamepad.cpp",
-                        "src/native/screen.cpp",
-                        "src/native/access.cpp",
                         "src/native/uinput.cpp",
                         "src/native/wayland.cpp"
-                    ],
-                    "include_dirs": [
-                        "<!@(node -p \"require('node-addon-api').include\")"
                     ],
                     "link_settings": {
                         "libraries": [

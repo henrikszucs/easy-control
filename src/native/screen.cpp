@@ -1,4 +1,5 @@
 #include "screen.h"
+#include "args.h"
 #include "platform.h"
 
 #include <algorithm>
@@ -10,7 +11,6 @@
     #include <cmath>
     #include <map>
     #include <shellscalingapi.h>
-    #pragma comment(lib, "Shcore.lib")
 #elif defined(IS_MACOS)
     #include <ApplicationServices/ApplicationServices.h>
     #include <CoreGraphics/CoreGraphics.h>
@@ -23,16 +23,6 @@
 
 
 #if defined(IS_WINDOWS)
-// A monitor's place in the logical coordinate space: its physical rectangle
-// and scale, and its logical origin and size.
-struct LogicalMonitor {
-    MonitorLayout layout;
-    LONG x;
-    LONG y;
-    LONG width;
-    LONG height;
-};
-
 static double MonitorScale(HMONITOR hMonitor) {
     UINT dpiX = 96;
     UINT dpiY = 96;
@@ -99,7 +89,7 @@ static Napi::String WideString(Napi::Env env, const std::wstring& text) {
     return Napi::String::New(env, std::u16string(text.begin(), text.end()));
 }
 
-std::vector<MonitorLayout> ListMonitors() {
+static std::vector<MonitorLayout> ListMonitors() {
     std::vector<MonitorLayout> monitors;
     EnumDisplayMonitors(NULL, NULL, MonitorEnumProc, reinterpret_cast<LPARAM>(&monitors));
     return monitors;
@@ -108,7 +98,7 @@ std::vector<MonitorLayout> ListMonitors() {
 // Lay the monitors out in logical pixels, as Electron's screen API does
 // (screen_layout.h): the primary monitor first, every monitor touching a
 // placed one put against it.
-static std::vector<LogicalMonitor> LayoutMonitors() {
+std::vector<LogicalMonitor> LayoutMonitors() {
     std::vector<LogicalMonitor> monitors;
     std::vector<ScreenLayout::PhysicalMonitor> physical;
     for (const MonitorLayout& layout : ListMonitors()) {
@@ -128,9 +118,7 @@ static std::vector<LogicalMonitor> LayoutMonitors() {
     return monitors;
 }
 
-void PhysicalToLogical(POINT point, double& x, double& y) {
-    std::vector<LogicalMonitor> monitors = LayoutMonitors();
-
+void PhysicalToLogical(const std::vector<LogicalMonitor>& monitors, POINT point, double& x, double& y) {
     // the monitor holding the point, or the nearest one
     const LogicalMonitor* found = nullptr;
     double bestDistance = 0;
@@ -154,9 +142,7 @@ void PhysicalToLogical(POINT point, double& x, double& y) {
     y = found->y + (point.y - r.top) / found->layout.scaleFactor;
 }
 
-POINT LogicalToPhysical(double x, double y) {
-    std::vector<LogicalMonitor> monitors = LayoutMonitors();
-
+POINT LogicalToPhysical(const std::vector<LogicalMonitor>& monitors, double x, double y) {
     // the monitor holding the point, or the nearest one
     const LogicalMonitor* found = nullptr;
     double bestDistance = 0;
@@ -431,6 +417,6 @@ Napi::Array IScreen::list(const Napi::CallbackInfo& info) {
 
 Napi::Object IScreen::Init(Napi::Env env, Napi::Object exports) {
     Napi::Object obj = Napi::Object::New(env);
-    obj.Set(Napi::String::New(env, "list"), Napi::Function::New(env, IScreen::list));
+    SetFunction(env, obj, "list", IScreen::list);
     return obj;
 }

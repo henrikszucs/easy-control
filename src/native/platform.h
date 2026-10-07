@@ -4,25 +4,65 @@
 
 // Helpers the modules share, one set per platform.
 
+#include "input_error.h"
+
+#include <napi.h>
+#include <string>
+
+// Throws a failed send as an Error, with its code when it has one.
+inline void ThrowInputError(Napi::Env env, const InputError& inputError) {
+    Napi::Error error = Napi::Error::New(env, inputError.message);
+    if (!inputError.code.empty()) {
+        error.Set("code", Napi::String::New(env, inputError.code));
+    }
+    error.ThrowAsJavaScriptException();
+}
+
 #if defined(IS_WINDOWS)
     #ifndef WIN32_LEAN_AND_MEAN
         #define WIN32_LEAN_AND_MEAN 1
     #endif
     #include <windows.h>
-    #include <napi.h>
-    #include <string>
+    #include <cstdio>
     #include <vector>
 
-    // Throws the Error of input Windows did not take (SendInput sending
-    // nothing, the pointer not to be read or set): the secure desktop - a UAC
-    // prompt, the lock or sign-in screen - is showing, or input is otherwise
-    // not this process's to send. UIPI drops are not reported this way;
+    // The error of input Windows did not take (SendInput sending nothing, the
+    // pointer not to be read or set): the secure desktop - a UAC prompt, the
+    // lock or sign-in screen - is showing, or input is otherwise not this
+    // process's to send. UIPI drops are not reported this way;
     // Platform.getInputBlock() tells about those.
+    inline InputError InputBlockedError(const std::string& what) {
+        return InputError{ "EASYCONTROL_INPUT_BLOCKED", "Windows did not take the input (" + what +
+            "); the secure desktop (a UAC prompt, the lock screen) may be showing, see Platform.getInputBlock()" };
+    }
+
     inline void ThrowInputBlocked(Napi::Env env, const std::string& what) {
-        Napi::Error error = Napi::Error::New(env, "Windows did not take the input (" + what +
-            "); the secure desktop (a UAC prompt, the lock screen) may be showing, see Platform.getInputBlock()");
-        error.Set("code", Napi::String::New(env, "EASYCONTROL_INPUT_BLOCKED"));
-        error.ThrowAsJavaScriptException();
+        ThrowInputError(env, InputBlockedError(what));
+    }
+
+    // a Windows error code as text, with the code: "Access is denied (0x00000005)"
+    inline std::string WinErrorText(DWORD code) {
+        char* text = nullptr;
+        FormatMessageA(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
+            nullptr, code, MAKELANGID(LANG_ENGLISH, SUBLANG_ENGLISH_US), (LPSTR)&text, 0, nullptr);
+        std::string result = text != nullptr ? text : "";
+        LocalFree(text);
+        while (!result.empty() && (result.back() == '\n' || result.back() == '\r' || result.back() == ' ' || result.back() == '.')) {
+            result.pop_back();
+        }
+        char number[16];
+        snprintf(number, sizeof(number), " (0x%08X)", (unsigned)code);
+        return result + number;
+    }
+
+    // UTF-8 -> UTF-16
+    inline std::wstring WidenUtf8(const std::string& text) {
+        const int size = MultiByteToWideChar(CP_UTF8, 0, text.c_str(), (int)text.length(), nullptr, 0);
+        std::wstring wide(size > 0 ? size : 0, L'\0');
+        if (size > 0) {
+            MultiByteToWideChar(CP_UTF8, 0, text.c_str(), (int)text.length(), &wide[0], size);
+        }
+        return wide;
     }
 
     // Runs the enclosed Win32 calls per-monitor DPI aware, so every coordinate
@@ -65,13 +105,25 @@
         bool isPrimary;
     };
 
-    // all monitors; call it inside a DpiScope (defined in screen.cpp)
-    std::vector<MonitorLayout> ListMonitors();
+    // A monitor's place in the logical coordinate space: its physical
+    // rectangle and scale, and its logical origin and size.
+    struct LogicalMonitor {
+        MonitorLayout layout;
+        LONG x;
+        LONG y;
+        LONG width;
+        LONG height;
+    };
 
-    // physical pixel -> logical coordinate, and back (defined in screen.cpp);
-    // call them inside a DpiScope
-    void PhysicalToLogical(POINT point, double& x, double& y);
-    POINT LogicalToPhysical(double x, double y);
+    // every monitor, laid out in logical pixels as Electron's screen API does
+    // (defined in screen.cpp); call it inside a DpiScope. It asks each monitor
+    // its DPI, so a call makes it once and passes it on.
+    std::vector<LogicalMonitor> LayoutMonitors();
+
+    // physical pixel -> logical coordinate, and back, in a layout from
+    // LayoutMonitors (defined in screen.cpp)
+    void PhysicalToLogical(const std::vector<LogicalMonitor>& monitors, POINT point, double& x, double& y);
+    POINT LogicalToPhysical(const std::vector<LogicalMonitor>& monitors, double x, double y);
 
 #elif defined(IS_MACOS)
     #include <ApplicationServices/ApplicationServices.h>
@@ -133,6 +185,20 @@
         static Display* display = nullptr;
         if (display == nullptr) {
             display = XOpenDisplay(nullptr);
+        }
+        return display;
+    }
+
+    // the error of having no X display to talk to
+    inline InputError NoDisplayError() {
+        return InputError{ "", "Failed to open X display" };
+    }
+
+    // Throws when there is no X display to talk to; returns it otherwise.
+    inline Display* RequireDisplay(Napi::Env env) {
+        Display* display = XGetMainDisplay();
+        if (display == nullptr) {
+            ThrowInputError(env, NoDisplayError());
         }
         return display;
     }

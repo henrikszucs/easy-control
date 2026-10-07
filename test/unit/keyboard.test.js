@@ -5,9 +5,10 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import os from "node:os";
 
-import { Keyboard, isWayland } from "./helpers.js";
+import { Keyboard, inputBlock, isWayland } from "./helpers.js";
 
 const commonKeys = [
     "KeyA", "KeyM", "KeyZ", "Digit0", "Digit5", "Digit9",
@@ -32,9 +33,9 @@ test("isKeySupported is false for names that are no key code", function() {
 });
 
 test("isKeySupported rejects a missing, non-string or empty argument", function() {
-    assert.throws(function() { Keyboard.isKeySupported(); }, TypeError);
-    assert.throws(function() { Keyboard.isKeySupported(65); }, TypeError);
-    assert.throws(function() { Keyboard.isKeySupported(""); }, { "name": "TypeError", "message": "Expected non empty string" });
+    assert.throws(function() { Keyboard.isKeySupported(); }, { "name": "TypeError", "message": "Expected 1 argument" });
+    assert.throws(function() { Keyboard.isKeySupported(65); }, { "name": "TypeError", "message": "Argument 1 must be a string" });
+    assert.throws(function() { Keyboard.isKeySupported(""); }, { "name": "TypeError", "message": "Argument 1 must not be empty" });
 });
 
 test("keyDown and keyUp throw for an unsupported key, without sending anything", function() {
@@ -82,16 +83,46 @@ test("GetLayout returns a non-empty layout name", function() {
 test("SetLayout rejects bad arguments and unknown layouts", function() {
     assert.throws(function() { Keyboard.SetLayout(); }, TypeError);
     assert.throws(function() { Keyboard.SetLayout(""); }, TypeError);
-    if (os.platform() !== "win32") {
-        // Windows loads any well-formed identifier, so only the others refuse
-        assert.throws(function() { Keyboard.SetLayout("no-such-layout-easy-control"); }, Error);
-    }
+    assert.throws(function() { Keyboard.SetLayout("no-such-layout-easy-control"); }, Error);
 });
 
-test("SetLayout to the current layout keeps it", { "skip": isWayland && "SetLayout is not supported on Wayland" }, function() {
+// the user's keyboard layouts, as "language:KLID" (Windows)
+const installedLayouts = function() {
+    return execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command",
+        "(Get-WinUserLanguageList).InputMethodTips -join ','"], { "encoding": "utf8" }).trim();
+};
+
+test("SetLayout on Windows does not install a layout the user does not have", {
+    "skip": (os.platform() !== "win32" && "Windows only") ||
+        (inputBlock === "secure-desktop" && "no foreground window on the secure desktop: SetLayout throws before looking")
+}, function() {
+    // a layout Windows has, which is in none of the user's languages
+    const before = installedLayouts();
+    const installed = before.toUpperCase();
+    const known = execFileSync("reg.exe", ["query", "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Keyboard Layouts"], { "encoding": "utf8" })
+        .split(/\r?\n/).map(function(line) {
+            return line.trim().split("\\").pop();
+        }).filter(function(klid) {
+            return /^[0-9A-F]{8}$/i.test(klid) && !installed.includes(":" + klid.toUpperCase());
+        });
+    assert.ok(known.length > 0, "every layout Windows has is installed");
+    assert.throws(function() { Keyboard.SetLayout(known[0]); }, { "message": "Layout not found" });
+    assert.equal(installedLayouts(), before, "the user's layouts did not change");
+});
+
+test("SetLayout to the current layout keeps it", {
+    "skip": (isWayland && "SetLayout is not supported on Wayland") ||
+        (inputBlock === "secure-desktop" && "no foreground window on the secure desktop")
+}, function() {
     const layout = Keyboard.GetLayout();
     Keyboard.SetLayout(layout);
     assert.equal(Keyboard.GetLayout(), layout);
+});
+
+test("SetLayout on the secure desktop throws EASYCONTROL_INPUT_BLOCKED", {
+    "skip": !(os.platform() === "win32" && inputBlock === "secure-desktop") && "no secure desktop showing"
+}, function() {
+    assert.throws(function() { Keyboard.SetLayout(Keyboard.GetLayout()); }, { "code": "EASYCONTROL_INPUT_BLOCKED" });
 });
 
 test("SetLayout throws on Wayland", { "skip": !isWayland && "not a Wayland session" }, function() {

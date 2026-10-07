@@ -6,6 +6,9 @@ import easyControl = require("easy-control");
 const { Mouse, Keyboard, Gamepad, Screen, Platform } = easyControl;
 
 Mouse.setPosition(Mouse.getX(), Mouse.getY());
+const position: easyControl.MousePosition = Mouse.getPosition();
+Mouse.moveByX(position.x - Mouse.getX());
+Mouse.moveByY(0);
 Keyboard.keyDown("KeyA");
 Keyboard.keyUp("KeyA");
 const gamepad: Promise<easyControl.VirtualGamepad> = Gamepad.create();

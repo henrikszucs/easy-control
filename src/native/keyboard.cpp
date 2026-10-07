@@ -1,11 +1,12 @@
 #include "keyboard.h"
+#include "args.h"
 #include "platform.h"
+#include "release_all.h"
 
 #if defined(IS_WINDOWS)
     #include <windows.h>
     #include <cstdlib>
     #include <cwchar>
-    #pragma comment(lib, "advapi32.lib")
 #elif defined(IS_MACOS)
     #include <ApplicationServices/ApplicationServices.h>
     #include <Carbon/Carbon.h>
@@ -506,18 +507,11 @@ static const std::map<std::string, unsigned int> SpecialKeys = {
 
 // reads the one non-empty string argument, or throws and returns false
 static bool ParseKey(const Napi::CallbackInfo& info, std::string& key) {
-    Napi::Env env = info.Env();
-    if (info.Length() < 1) {
-        Napi::TypeError::New(env, "Expected 1 argument").ThrowAsJavaScriptException();
+    if (!RequireString(info, 0, key)) {
         return false;
     }
-    if (!info[0].IsString()) {
-        Napi::TypeError::New(env, "Expected string argument").ThrowAsJavaScriptException();
-        return false;
-    }
-    key = info[0].As<Napi::String>().Utf8Value();
     if (key.length() == 0) {
-        Napi::TypeError::New(env, "Expected non empty string").ThrowAsJavaScriptException();
+        Napi::TypeError::New(info.Env(), "Argument 1 must not be empty").ThrowAsJavaScriptException();
         return false;
     }
     return true;
@@ -623,15 +617,6 @@ static bool PostKey(CGKeyCode keycode, bool isDown) {
 }
 
 #elif defined(IS_LINUX)
-// Throws when there is no X display to talk to; returns it otherwise.
-static Display* RequireDisplay(Napi::Env env) {
-    Display* display = XGetMainDisplay();
-    if (display == NULL) {
-        Napi::Error::New(env, "Failed to open X display").ThrowAsJavaScriptException();
-    }
-    return display;
-}
-
 // the X11 keysym of a Unicode code point
 static KeySym CodepointToKeysym(uint32_t codepoint) {
     switch (codepoint) {
@@ -863,25 +848,22 @@ static bool TypeUnicodeEntry(Display* display, const TypingKeys& keys, uint32_t 
 static std::mutex pressedKeysMutex;
 static std::set<std::string> pressedKeys;
 
-// presses or releases a supported key; false, after throwing, when it fails
-static bool SendKey(Napi::Env env, const std::string& key, bool isDown) {
+// presses or releases a supported key; the error when it fails
+static InputError SendKey(const std::string& key, bool isDown) {
     auto it = SpecialKeys.find(key);
     if (it == SpecialKeys.end()) {
-        Napi::Error::New(env, "Key not supported").ThrowAsJavaScriptException();
-        return false;
+        return InputError{ "", "Key not supported" };
     }
 
     #if defined(IS_WINDOWS)
         INPUT input = ScanCodeInput(it->second, !isDown);
         if (SendInput(1, &input, sizeof(INPUT)) != 1) {
-            ThrowInputBlocked(env, "SendInput sent nothing");
-            return false;
+            return InputBlockedError("SendInput sent nothing");
         }
 
     #elif defined(IS_MACOS)
         if (!PostKey(it->second, isDown)) {
-            Napi::Error::New(env, isDown ? "Failed to create key down event" : "Failed to create key up event").ThrowAsJavaScriptException();
-            return false;
+            return InputError{ "", isDown ? "Failed to create key down event" : "Failed to create key up event" };
         }
 
     #elif defined(IS_LINUX)
@@ -889,24 +871,28 @@ static bool SendKey(Napi::Env env, const std::string& key, bool isDown) {
             // the table holds X keycodes, which are the evdev codes plus 8
             std::string error;
             if (!VirtualInput::KeyboardKey((unsigned short)(it->second - 8), isDown, error)) {
-                Napi::Error::New(env, error).ThrowAsJavaScriptException();
-                return false;
+                return InputError{ "", error };
             }
-            return true;
+            return InputError();
         }
-        Display *display = RequireDisplay(env);
+        Display *display = XGetMainDisplay();
         if (display == NULL) {
-            return false;
+            return NoDisplayError();
         }
         XTestFakeKeyEvent(display, it->second, isDown ? True : False, CurrentTime);
         XFlush(display);
     #endif
-    return true;
+    return InputError();
 }
 
 static void PressKey(const Napi::CallbackInfo& info, bool isDown) {
     std::string key;
-    if (!ParseKey(info, key) || !SendKey(info.Env(), key, isDown)) {
+    if (!ParseKey(info, key)) {
+        return;
+    }
+    const InputError error = SendKey(key, isDown);
+    if (error.IsFailed()) {
+        ThrowInputError(info.Env(), error);
         return;
     }
     std::lock_guard<std::mutex> lock(pressedKeysMutex);
@@ -918,17 +904,24 @@ static void PressKey(const Napi::CallbackInfo& info, bool isDown) {
 }
 
 // Keyboard.releaseAll(): releases every key keyDown pressed and keyUp did not
-// release yet, e.g. when the remote side of a session is gone
+// release yet, e.g. when the remote side of a session is gone. Every one is
+// tried; those that fail stay held for the next call, and the first failure
+// is thrown.
 void Keyboard::releaseAll(const Napi::CallbackInfo& info) {
     std::set<std::string> keys;
     {
         std::lock_guard<std::mutex> lock(pressedKeysMutex);
         keys.swap(pressedKeys);
     }
-    for (const std::string& key : keys) {
-        if (!SendKey(info.Env(), key, false)) {
-            return;
-        }
+    const InputError error = ReleaseEach(keys, [](const std::string& key) {
+        return SendKey(key, false);
+    });
+    if (!keys.empty()) {
+        std::lock_guard<std::mutex> lock(pressedKeysMutex);
+        pressedKeys.insert(keys.begin(), keys.end());
+    }
+    if (error.IsFailed()) {
+        ThrowInputError(info.Env(), error);
     }
 }
 
@@ -975,15 +968,10 @@ static const char* ControlCharacterKey(uint32_t codepoint) {
 
 void Keyboard::type(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
-    if (info.Length() < 1) {
-        Napi::TypeError::New(env, "Expected 1 argument").ThrowAsJavaScriptException();
+    std::string text;
+    if (!RequireString(info, 0, text)) {
         return;
     }
-    if (!info[0].IsString()) {
-        Napi::TypeError::New(env, "Expected string argument").ThrowAsJavaScriptException();
-        return;
-    }
-    const std::string text = info[0].As<Napi::String>().Utf8Value();
     if (text.empty()) {
         return;
     }
@@ -1357,14 +1345,42 @@ void Keyboard::SetLayout(const Napi::CallbackInfo& info) {
     }
 
     #if defined(IS_WINDOWS)
-        HKL hkl = LoadKeyboardLayoutW(std::wstring(layout.begin(), layout.end()).c_str(), KLF_ACTIVATE);
-        if (hkl == NULL) {
-            Napi::Error::New(env, "Failed to set keyboard layout").ThrowAsJavaScriptException();
+        // the layout is switched for the window the input goes to
+        HWND foreground = GetForegroundWindow();
+        if (foreground == NULL) {
+            ThrowInputBlocked(env, "no foreground window to switch the layout of");
             return;
         }
-        // ask the window the input goes to to switch; Windows answers the
-        // request with WM_INPUTLANGCHANGE itself
-        PostMessageW(GetForegroundWindow(), WM_INPUTLANGCHANGEREQUEST, 0, (LPARAM)hkl);
+
+        // only to a layout the user has, never adding one to their languages:
+        // the handle with that KLID, in the window's current language when
+        // several languages have it (US under English and under Hungarian)
+        const std::wstring klid = WidenUtf8(layout);
+        const int count = GetKeyboardLayoutList(0, NULL);
+        std::vector<HKL> hkls(count > 0 ? count : 0);
+        hkls.resize(count > 0 ? GetKeyboardLayoutList(count, hkls.data()) : 0);
+        const WORD language = LOWORD((DWORD)(UINT_PTR)GetKeyboardLayout(GetWindowThreadProcessId(foreground, NULL)));
+        HKL hkl = NULL;
+        for (HKL candidate : hkls) {
+            if (_wcsicmp(LayoutName(candidate).c_str(), klid.c_str()) != 0) {
+                continue;
+            }
+            if (hkl == NULL || LOWORD((DWORD)(UINT_PTR)candidate) == language) {
+                hkl = candidate;
+            }
+            if (LOWORD((DWORD)(UINT_PTR)candidate) == language) {
+                break;
+            }
+        }
+        if (hkl == NULL) {
+            Napi::Error::New(env, "Layout not found").ThrowAsJavaScriptException();
+            return;
+        }
+        // Windows answers the request with WM_INPUTLANGCHANGE itself
+        if (!PostMessageW(foreground, WM_INPUTLANGCHANGEREQUEST, 0, (LPARAM)hkl)) {
+            Napi::Error::New(env, "Failed to switch the keyboard layout: " + WinErrorText(GetLastError())).ThrowAsJavaScriptException();
+            return;
+        }
 
     #elif defined(IS_MACOS)
         // Convert C++ string to CFString
@@ -1495,18 +1511,14 @@ Napi::Value Keyboard::getLockState(const Napi::CallbackInfo& info) {
 
 Napi::Object Keyboard::Init(Napi::Env env, Napi::Object exports) {
     Napi::Object obj = Napi::Object::New(env);
-    obj.Set(Napi::String::New(env, "keyDown"), Napi::Function::New(env, Keyboard::keyDown));
-    obj.Set(Napi::String::New(env, "keyUp"), Napi::Function::New(env, Keyboard::keyUp));
-    obj.Set(Napi::String::New(env, "releaseAll"), Napi::Function::New(env, Keyboard::releaseAll));
-    obj.Set(Napi::String::New(env, "isKeySupported"), Napi::Function::New(env, Keyboard::isKeySupported));
-    obj.Set(Napi::String::New(env, "type"), Napi::Function::New(env, Keyboard::type));
-    obj.Set(Napi::String::New(env, "getLockState"), Napi::Function::New(env, Keyboard::getLockState));
+    SetFunction(env, obj, "keyDown", Keyboard::keyDown);
+    SetFunction(env, obj, "keyUp", Keyboard::keyUp);
+    SetFunction(env, obj, "releaseAll", Keyboard::releaseAll);
+    SetFunction(env, obj, "isKeySupported", Keyboard::isKeySupported);
+    SetFunction(env, obj, "type", Keyboard::type);
+    SetFunction(env, obj, "getLockState", Keyboard::getLockState);
     // getLayout/setLayout, and the same functions by their old names
-    Napi::Function getLayout = Napi::Function::New(env, Keyboard::GetLayout);
-    Napi::Function setLayout = Napi::Function::New(env, Keyboard::SetLayout);
-    obj.Set(Napi::String::New(env, "getLayout"), getLayout);
-    obj.Set(Napi::String::New(env, "setLayout"), setLayout);
-    obj.Set(Napi::String::New(env, "GetLayout"), getLayout);
-    obj.Set(Napi::String::New(env, "SetLayout"), setLayout);
+    obj.Set("GetLayout", SetFunction(env, obj, "getLayout", Keyboard::GetLayout));
+    obj.Set("SetLayout", SetFunction(env, obj, "setLayout", Keyboard::SetLayout));
     return obj;
 }

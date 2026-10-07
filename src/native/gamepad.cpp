@@ -1,4 +1,5 @@
 #include "gamepad.h"
+#include "args.h"
 
 #include <chrono>
 #include <cmath>
@@ -632,14 +633,8 @@ void Gamepad::SetButton(const Napi::CallbackInfo& info, bool isDown) {
         return;
     }
 
-    if (info.Length() < 1 || !info[0].IsNumber()) {
-        Napi::TypeError::New(env, "Button index expected").ThrowAsJavaScriptException();
-        return;
-    }
-    int btnIndex = info[0].As<Napi::Number>().Int32Value();
-
-    if (btnIndex < 0 || btnIndex >= BUTTON_COUNT) {
-        Napi::RangeError::New(env, "Button index out of range (0-16)").ThrowAsJavaScriptException();
+    int btnIndex = 0;
+    if (!RequireIndex(info, 0, BUTTON_COUNT, "Button index out of range (0-16)", btnIndex)) {
         return;
     }
 
@@ -675,13 +670,12 @@ void Gamepad::SetAxis(const Napi::CallbackInfo& info) {
         return;
     }
 
-    if (info.Length() < 2 || !info[0].IsNumber() || !info[1].IsNumber()) {
-        Napi::TypeError::New(env, "Axis index and direction expected").ThrowAsJavaScriptException();
+    int axisIndex = 0;
+    if (!RequireArgs(info, 2) || !RequireIndex(info, 0, AXIS_COUNT, "Axis index out of range (0-5)", axisIndex)) {
         return;
     }
-    int axisIndex = info[0].As<Napi::Number>().Int32Value();
-    if (axisIndex < 0 || axisIndex >= AXIS_COUNT) {
-        Napi::RangeError::New(env, "Axis index out of range (0-5)").ThrowAsJavaScriptException();
+    if (!info[1].IsNumber()) {
+        Napi::TypeError::New(env, "Argument 2 must be a number").ThrowAsJavaScriptException();
         return;
     }
     double axisValue = info[1].As<Napi::Number>().DoubleValue();
@@ -1026,14 +1020,13 @@ Napi::Value Gamepad::UninstallDriver(const Napi::CallbackInfo& info) {
 Napi::Object Gamepad::Init(Napi::Env env, Napi::Object exports) {
     Napi::Object obj = Napi::Object::New(env);
 
-    obj.Set(Napi::String::New(env, "list"), Napi::Function::New(env, Gamepad::list));
-    obj.Set(Napi::String::New(env, "getDriverStatus"), Napi::Function::New(env, Gamepad::GetDriverStatus));
-    obj.Set(Napi::String::New(env, "installDriver"), Napi::Function::New(env, Gamepad::InstallDriver));
-    obj.Set(Napi::String::New(env, "uninstallDriver"), Napi::Function::New(env, Gamepad::UninstallDriver));
+    SetFunction(env, obj, "list", Gamepad::list);
+    SetFunction(env, obj, "getDriverStatus", Gamepad::GetDriverStatus);
+    SetFunction(env, obj, "installDriver", Gamepad::InstallDriver);
+    SetFunction(env, obj, "uninstallDriver", Gamepad::UninstallDriver);
 
     // object create
-    Napi::Function create = Napi::Function::New(env, Gamepad::CreateObject);
-    obj.Set(Napi::String::New(env, "create"), create);
+    Napi::Function create = SetFunction(env, obj, "create", Gamepad::CreateObject);
 
     Napi::Function func = DefineClass(env,
         "Gamepad",

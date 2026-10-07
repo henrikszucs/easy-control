@@ -147,6 +147,19 @@ test("buttons and axes reject bad indices and values", { "skip": skipNoDriver },
             assert.throws(function() { gamepad[fn]("0"); }, TypeError);
             assert.throws(function() { gamepad[fn](-1); }, RangeError);
             assert.throws(function() { gamepad[fn](BUTTON_COUNT); }, { "name": "RangeError", "message": "Button index out of range (0-16)" });
+            // not taken for 0, 1 or 1 (NaN, 1.5, 2**32 + 1 as Int32)
+            for (const index of [NaN, 1.5, -0.5, Infinity]) {
+                assert.throws(function() { gamepad[fn](index); }, { "name": "TypeError", "message": "Argument 1 must be an integer" }, String(index));
+            }
+            for (const index of [2 ** 32, 2 ** 32 + 1]) {
+                assert.throws(function() { gamepad[fn](index); }, RangeError, String(index));
+            }
+        }
+        for (const index of [NaN, 1.5, -0.5, Infinity]) {
+            assert.throws(function() { gamepad.setAxis(index, 0); }, { "name": "TypeError", "message": "Argument 1 must be an integer" }, String(index));
+        }
+        for (const index of [2 ** 32, 2 ** 32 + 1]) {
+            assert.throws(function() { gamepad.setAxis(index, 0); }, RangeError, String(index));
         }
         assert.throws(function() { gamepad.setAxis(); }, TypeError);
         assert.throws(function() { gamepad.setAxis(0); }, TypeError);

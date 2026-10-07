@@ -31,9 +31,19 @@ test("getX and getY return finite numbers", { "skip": !isPointerReadable && "the
 });
 
 test("on the secure desktop the pointer is not read, and the error says why", { "skip": isPointerReadable && "no secure desktop showing" }, function() {
-    for (const fn of [Mouse.getX, Mouse.getY]) {
+    for (const fn of [Mouse.getX, Mouse.getY, Mouse.getPosition]) {
         assert.throws(fn, { "code": "EASYCONTROL_INPUT_BLOCKED", "message": /getInputBlock/ });
     }
+});
+
+test("getPosition returns getX and getY in one read", { "skip": !isPointerReadable && "the secure desktop is showing" }, function() {
+    const position = Mouse.getPosition();
+    assert.deepEqual(Object.keys(position).sort(), ["x", "y"]);
+    assert.ok(Number.isFinite(position["x"]) && Number.isFinite(position["y"]));
+    // the pointer may be moved by hand meanwhile; while it is still, they agree
+    const tolerance = pixelTolerance(Screen.list());
+    assertNear(position["x"], Mouse.getX(), tolerance, "x");
+    assertNear(position["y"], Mouse.getY(), tolerance, "y");
 });
 
 test("a position read can be set back unchanged", { "skip": skipNoInputAccess }, function() {
@@ -109,12 +119,12 @@ test("getIconId is a non-negative integer, stable while the shape does not chang
 });
 
 test("setPosition, setX and setY reject bad coordinates", function() {
-    assert.throws(function() { Mouse.setPosition(); }, TypeError);
-    assert.throws(function() { Mouse.setPosition(10); }, TypeError);
-    assert.throws(function() { Mouse.setPosition("10", 10); }, TypeError);
-    assert.throws(function() { Mouse.setPosition(10, NaN); }, { "name": "TypeError", "message": "Expected finite number argument" });
+    assert.throws(function() { Mouse.setPosition(); }, { "name": "TypeError", "message": "Expected 2 arguments" });
+    assert.throws(function() { Mouse.setPosition(10); }, { "name": "TypeError", "message": "Expected 2 arguments" });
+    assert.throws(function() { Mouse.setPosition("10", 10); }, { "name": "TypeError", "message": "Argument 1 must be a finite number" });
+    assert.throws(function() { Mouse.setPosition(10, NaN); }, { "name": "TypeError", "message": "Argument 2 must be a finite number" });
     assert.throws(function() { Mouse.setPosition(Infinity, 10); }, TypeError);
-    assert.throws(function() { Mouse.setX(); }, TypeError);
+    assert.throws(function() { Mouse.setX(); }, { "name": "TypeError", "message": "Expected 1 argument" });
     assert.throws(function() { Mouse.setX(null); }, TypeError);
     assert.throws(function() { Mouse.setY(); }, TypeError);
     assert.throws(function() { Mouse.setY(-Infinity); }, TypeError);
@@ -123,7 +133,7 @@ test("setPosition, setX and setY reject bad coordinates", function() {
 test("buttonDown and buttonUp reject unknown buttons", function() {
     for (const fn of [Mouse.buttonDown, Mouse.buttonUp]) {
         assert.throws(function() { fn(); }, { "name": "TypeError", "message": "Expected 1 argument" });
-        assert.throws(function() { fn(0); }, { "name": "TypeError", "message": "Expected string argument" });
+        assert.throws(function() { fn(0); }, { "name": "TypeError", "message": "Argument 1 must be a string" });
         assert.throws(function() { fn("LEFT"); }, TypeError);
         assert.throws(function() { fn("wheel"); }, TypeError);
     }
@@ -158,8 +168,8 @@ test("scroll needs two finite numbers of at most 10000 notches", function() {
 });
 
 test("moveBy needs two finite numbers of at most 100000 counts", function() {
-    assert.throws(function() { Mouse.moveBy(); }, TypeError);
-    assert.throws(function() { Mouse.moveBy(1); }, TypeError);
+    assert.throws(function() { Mouse.moveBy(); }, { "name": "TypeError", "message": "Expected 2 arguments" });
+    assert.throws(function() { Mouse.moveBy(1); }, { "name": "TypeError", "message": "Expected 2 arguments" });
     assert.throws(function() { Mouse.moveBy("1", 0); }, TypeError);
     assert.throws(function() { Mouse.moveBy(Infinity, 0); }, { "name": "TypeError", "message": /finite/ });
     assert.throws(function() { Mouse.moveBy(0, -100001); }, { "name": "RangeError", "message": /100000/ });
@@ -182,6 +192,34 @@ test("moveBy moves the pointer that way, fractions adding up", { "skip": skipNoI
     Mouse.moveBy(0.4, 0);
     Mouse.moveBy(0.4, 0);
     assert.ok(Mouse.getX() > x0, "three fractions make a count");
+});
+
+test("moveByX and moveByY need one finite number of at most 100000 counts", function() {
+    for (const fn of [Mouse.moveByX, Mouse.moveByY]) {
+        assert.throws(function() { fn(); }, { "name": "TypeError", "message": "Expected 1 argument" });
+        assert.throws(function() { fn("1"); }, { "name": "TypeError", "message": "Argument 1 must be a finite number" });
+        assert.throws(function() { fn(Infinity); }, { "name": "TypeError", "message": /finite/ });
+        assert.throws(function() { fn(100001); }, { "name": "RangeError", "message": /100000/ });
+        assert.throws(function() { fn(-100001); }, RangeError);
+    }
+});
+
+test("moveByX moves only horizontally and moveByY only vertically", { "skip": skipNoInputAccess }, function() {
+    const primary = Screen.list().find(function(s) {
+        return s["isPrimary"];
+    });
+    const tolerance = pixelTolerance([primary]);
+    const x0 = primary["x"] + primary["width"] / 2;
+    const y0 = primary["y"] + primary["height"] / 2;
+    Mouse.setPosition(x0, y0);
+    Mouse.moveByX(20);
+    assert.ok(Mouse.getX() > x0, "moveByX(20) moved right");
+    assertNear(Mouse.getY(), y0, tolerance, "moveByX kept y");
+
+    Mouse.setPosition(x0, y0);
+    Mouse.moveByY(-20);
+    assert.ok(Mouse.getY() < y0, "moveByY(-20) moved up");
+    assertNear(Mouse.getX(), x0, tolerance, "moveByY kept x");
 });
 
 test("releaseAll with no button down does nothing and throws nothing", function() {

@@ -3,7 +3,7 @@
 // the lines marked @ts-expect-error must stay errors.
 
 import easyControl, { Mouse, Keyboard, Gamepad, Screen, Platform } from "easy-control";
-import type { EasyControlError, ErrorCode, MouseIcon, ScreenInfo, DriverStatus, VirtualGamepad, LockState,
+import type { EasyControlError, ErrorCode, MouseIcon, MousePosition, ScreenInfo, DriverStatus, VirtualGamepad, LockState,
     GamepadState, RumbleEvent, InputBlock } from "easy-control";
 
 const x: number = Mouse.getX();
@@ -15,6 +15,10 @@ Mouse.setX(x);
 Mouse.setY(y);
 Mouse.setPosition(x, y);
 Mouse.moveBy(5, -3.5);
+Mouse.moveByX(-2);
+Mouse.moveByY(0.5);
+const position: MousePosition = Mouse.getPosition();
+const positionX: number = position.x + Mouse.getPosition().y;
 Mouse.buttonDown("left");
 Mouse.buttonUp("forward");
 Mouse.releaseAll();
@@ -23,6 +27,10 @@ Mouse.scrollUp(-2, true);
 Mouse.scroll(0, 0.25);
 // @ts-expect-error: both moveBy arguments are required
 Mouse.moveBy(1);
+// @ts-expect-error: moveByX takes one distance
+Mouse.moveByX(1, 0);
+// @ts-expect-error: the distance is required
+Mouse.moveByY();
 // @ts-expect-error: scroll takes numbers, not a direction flag
 Mouse.scroll(1, false);
 // @ts-expect-error: not a button

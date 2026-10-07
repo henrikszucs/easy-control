@@ -14,8 +14,8 @@ const SUPPORTED_TARGETS = ["darwin-arm64", "darwin-x64", "linux-arm64", "linux-x
 // every function of each object; the stand-ins are made from it, and
 // easy-control.d.ts declares the same
 const API = {
-    "Mouse": ["getX", "getY", "getIcon", "getIconId", "setX", "setY", "setPosition", "moveBy",
-        "buttonDown", "buttonUp", "releaseAll", "scrollDown", "scrollUp", "scroll"],
+    "Mouse": ["getX", "getY", "getPosition", "getIcon", "getIconId", "setX", "setY", "setPosition",
+        "moveBy", "moveByX", "moveByY", "buttonDown", "buttonUp", "releaseAll", "scrollDown", "scrollUp", "scroll"],
     "Keyboard": ["keyDown", "keyUp", "releaseAll", "isKeySupported", "type", "getLockState",
         "getLayout", "setLayout", "GetLayout", "SetLayout"],
     "Gamepad": ["list", "create", "getDriverStatus", "installDriver", "uninstallDriver"],
@@ -47,7 +47,8 @@ const unsupportedError = function() {
     return error;
 };
 
-// the addon's object, or a stand-in whose functions say why there is none
+// the addon's object, or a stand-in whose functions say why there is none;
+// neither is frozen, so an app's test doubles can replace their functions
 const namespace = function(name) {
     if (addon !== null) {
         return addon[name];
@@ -58,7 +59,7 @@ const namespace = function(name) {
             ? function() { return Promise.reject(unsupportedError()); }
             : function() { throw unsupportedError(); };
     }
-    return Object.freeze(stub);
+    return stub;
 };
 
 const Mouse = namespace("Mouse");
@@ -90,13 +91,19 @@ const Platform = Object.freeze({
 // process) still happens, unless the app listens for them itself.
 // Only the main thread does it: what is held is kept for the whole process,
 // so a worker ending must not release what the other threads hold.
+// The functions are taken now: the namespaces are the app's objects too, and
+// what an app puts in Keyboard.releaseAll is not what is to run at exit.
 if (addon !== null && isMainThread) {
+    const releaseKeys = addon.Keyboard.releaseAll;
+    const releaseButtons = addon.Mouse.releaseAll;
     const releaseAll = function() {
-        try {
-            addon.Keyboard.releaseAll();
-            addon.Mouse.releaseAll();
-        } catch {
-            // ending anyway
+        // each on its own: keys that cannot be released keep no button held
+        for (const release of [releaseKeys, releaseButtons]) {
+            try {
+                release();
+            } catch {
+                // ending anyway
+            }
         }
     };
     process.on("exit", releaseAll);

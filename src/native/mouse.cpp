@@ -1,10 +1,13 @@
 #include "mouse.h"
+#include "args.h"
 #include "platform.h"
+#include "release_all.h"
 
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <initializer_list>
 #include <mutex>
 #include <set>
 #include <string>
@@ -92,22 +95,15 @@ static uint32_t HashBytes(const uint8_t* bytes, size_t length, uint32_t hash = 2
 
 // reads the button name argument, or throws and returns false
 static bool ParseButton(const Napi::CallbackInfo& info, std::string& button) {
-    Napi::Env env = info.Env();
-    if (info.Length() < 1) {
-        Napi::TypeError::New(env, "Expected 1 argument").ThrowAsJavaScriptException();
+    if (!RequireString(info, 0, button)) {
         return false;
     }
-    if (!info[0].IsString()) {
-        Napi::TypeError::New(env, "Expected string argument").ThrowAsJavaScriptException();
-        return false;
-    }
-    button = info[0].As<Napi::String>().Utf8Value();
     if (button != "left" &&
         button != "middle" &&
         button != "right" &&
         button != "back" &&
         button != "forward") {
-        Napi::TypeError::New(env, "Expected 'left', 'middle', 'right', 'back', or 'forward'").ThrowAsJavaScriptException();
+        Napi::TypeError::New(info.Env(), "Argument 1 must be 'left', 'middle', 'right', 'back' or 'forward'").ThrowAsJavaScriptException();
         return false;
     }
     return true;
@@ -119,38 +115,19 @@ static const double MAX_SCROLL_NOTCHES = 10000;
 
 // reads the scroll arguments, or throws and returns false
 static bool ParseScroll(const Napi::CallbackInfo& info, int& amount, bool& isHorizontal) {
-    Napi::Env env = info.Env();
-    if (info.Length() < 2) {
-        Napi::TypeError::New(env, "Expected 2 argument").ThrowAsJavaScriptException();
+    double notches = 0;
+    if (!RequireArgs(info, 2) || !RequireFinite(info, 0, notches) || !RequireBoolean(info, 1, isHorizontal)) {
         return false;
     }
-    if (!info[0].IsNumber() || !std::isfinite(info[0].As<Napi::Number>().DoubleValue())) {
-        Napi::TypeError::New(env, "Expected finite number in 1st argument").ThrowAsJavaScriptException();
+    if (std::fabs(notches) > MAX_SCROLL_NOTCHES) {
+        Napi::RangeError::New(info.Env(), "Scroll amount out of range (-10000 to 10000)").ThrowAsJavaScriptException();
         return false;
     }
-    if (!info[1].IsBoolean()) {
-        Napi::TypeError::New(env, "Expected boolean 2nd argument").ThrowAsJavaScriptException();
-        return false;
-    }
-    if (std::fabs(info[0].As<Napi::Number>().DoubleValue()) > MAX_SCROLL_NOTCHES) {
-        Napi::RangeError::New(env, "Scroll amount out of range (-10000 to 10000)").ThrowAsJavaScriptException();
-        return false;
-    }
-    amount = info[0].As<Napi::Number>().Int32Value();
-    isHorizontal = info[1].As<Napi::Boolean>().Value();
+    amount = (int)std::trunc(notches);
     return true;
 }
 
 #if defined(IS_LINUX)
-// Throws when there is no X display to talk to; returns it otherwise.
-static Display* RequireDisplay(Napi::Env env) {
-    Display* display = XGetMainDisplay();
-    if (display == NULL) {
-        Napi::Error::New(env, "Failed to open X display").ThrowAsJavaScriptException();
-    }
-    return display;
-}
-
 // Wayland tells no client where the pointer is, so the position is the one
 // last set through easy-control (valid once isPointerSet)
 static std::mutex pointerMutex;
@@ -167,15 +144,28 @@ static void ThrowIfFailed(Napi::Env env, bool isDone, const std::string& error) 
 #endif
 
 
+// What converting between the pointer's and the logical coordinates needs,
+// made once per call. On Windows the monitors' layout, which asks every
+// monitor its DPI, so a call that reads the position and moves the pointer
+// (setX, setY) makes it once; with the thread per-monitor DPI aware for as
+// long as it lives. Nothing elsewhere.
+#if defined(IS_WINDOWS)
+struct ScreenSpace {
+    DpiScope dpiScope;
+    std::vector<LogicalMonitor> monitors = LayoutMonitors();
+};
+#else
+struct ScreenSpace {};
+#endif
+
 // the pointer position in logical coordinates (see Screen.list)
-static bool GetPosition(double& x, double& y) {
+static bool GetPosition(const ScreenSpace& space, double& x, double& y) {
     #if defined(IS_WINDOWS)
-        DpiScope dpiScope;
         POINT point;
         if (!GetCursorPos(&point)) {
             return false;
         }
-        PhysicalToLogical(point, x, y);
+        PhysicalToLogical(space.monitors, point, x, y);
         return true;
 
     #elif defined(IS_MACOS)
@@ -274,10 +264,9 @@ static CGRect DisplaysBounds() {
 #endif
 
 // moves the pointer to logical coordinates (see Screen.list)
-static void MoveTo(Napi::Env env, double x, double y) {
+static void MoveTo(Napi::Env env, const ScreenSpace& space, double x, double y) {
     #if defined(IS_WINDOWS)
-        DpiScope dpiScope;
-        POINT point = LogicalToPhysical(x, y);
+        POINT point = LogicalToPhysical(space.monitors, x, y);
         if (!SetCursorPos(point.x, point.y)) {
             ThrowInputBlocked(env, "SetCursorPos failed");
         }
@@ -285,7 +274,7 @@ static void MoveTo(Napi::Env env, double x, double y) {
     #elif defined(IS_MACOS)
         double currentX = x;
         double currentY = y;
-        GetPosition(currentX, currentY);
+        GetPosition(space, currentX, currentY);
         if (!PostMove(CGPointMake(x, y), std::lround(x - currentX), std::lround(y - currentY))) {
             Napi::Error::New(env, "Failed to create mouse event").ThrowAsJavaScriptException();
         }
@@ -336,8 +325,8 @@ static void MoveTo(Napi::Env env, double x, double y) {
 
 
 // the pointer position, or false after throwing why it cannot be read
-static bool RequirePosition(Napi::Env env, double& x, double& y) {
-    if (GetPosition(x, y)) {
+static bool RequirePosition(Napi::Env env, const ScreenSpace& space, double& x, double& y) {
+    if (GetPosition(space, x, y)) {
         return true;
     }
     #if defined(IS_WINDOWS)
@@ -356,7 +345,7 @@ Napi::Value Mouse::getX(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
     double x = 0;
     double y = 0;
-    if (!RequirePosition(env, x, y)) {
+    if (!RequirePosition(env, ScreenSpace(), x, y)) {
         return env.Undefined();
     }
     return Napi::Number::New(env, x);
@@ -366,10 +355,25 @@ Napi::Value Mouse::getY(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
     double x = 0;
     double y = 0;
-    if (!RequirePosition(env, x, y)) {
+    if (!RequirePosition(env, ScreenSpace(), x, y)) {
         return env.Undefined();
     }
     return Napi::Number::New(env, y);
+}
+
+// Mouse.getPosition(): { x, y } from one read, so both belong to the same
+// moment
+Napi::Value Mouse::getPosition(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    double x = 0;
+    double y = 0;
+    if (!RequirePosition(env, ScreenSpace(), x, y)) {
+        return env.Undefined();
+    }
+    Napi::Object position = Napi::Object::New(env);
+    position.Set("x", x);
+    position.Set("y", y);
+    return position;
 }
 
 
@@ -385,8 +389,19 @@ static bool ReadCursor(CursorPicture& picture) {
             return false;
         }
 
+        // the cursor's bitmaps and a screen DC, freed on every path
+        struct CursorBitmaps {
+            ICONINFO iconInfo = {};
+            HDC hdcScreen = NULL;
+            ~CursorBitmaps() {
+                if (iconInfo.hbmColor) DeleteObject(iconInfo.hbmColor);
+                if (iconInfo.hbmMask) DeleteObject(iconInfo.hbmMask);
+                if (hdcScreen != NULL) ReleaseDC(NULL, hdcScreen);
+            }
+        } bitmaps;
+        ICONINFO& iconInfo = bitmaps.iconInfo;
+
         // Get icon information to determine actual size
-        ICONINFO iconInfo;
         if (!GetIconInfo(ci.hCursor, &iconInfo)) {
             return false;
         }
@@ -394,14 +409,16 @@ static bool ReadCursor(CursorPicture& picture) {
         // Get bitmap dimensions
         BITMAP bmp;
         if (GetObject(iconInfo.hbmColor ? iconInfo.hbmColor : iconInfo.hbmMask, sizeof(BITMAP), &bmp) == 0) {
-            if (iconInfo.hbmColor) DeleteObject(iconInfo.hbmColor);
-            if (iconInfo.hbmMask) DeleteObject(iconInfo.hbmMask);
             return false;
         }
         int width = bmp.bmWidth;
         int height = iconInfo.hbmColor ? bmp.bmHeight : bmp.bmHeight / 2;
 
-        HDC hdcScreen = GetDC(NULL);
+        bitmaps.hdcScreen = GetDC(NULL);
+        HDC hdcScreen = bitmaps.hdcScreen;
+        if (hdcScreen == NULL) {
+            return false;
+        }
         picture.rgba.resize((size_t)width * height * 4);
         uint8_t* out = picture.rgba.data();
 
@@ -421,12 +438,16 @@ static bool ReadCursor(CursorPicture& picture) {
             // Buffer for Color Bitmap
             std::vector<uint8_t> colorPixels((size_t)width * height * 4);
             resetHeader(height);
-            GetDIBits(hdcScreen, iconInfo.hbmColor, 0, height, colorPixels.data(), &bmi, DIB_RGB_COLORS);
+            if (GetDIBits(hdcScreen, iconInfo.hbmColor, 0, height, colorPixels.data(), &bmi, DIB_RGB_COLORS) == 0) {
+                return false;
+            }
 
             // Buffer for Mask Bitmap (fallback in case color has no alpha)
             std::vector<uint8_t> maskPixels((size_t)width * height * 4);
             resetHeader(height);
-            GetDIBits(hdcScreen, iconInfo.hbmMask, 0, height, maskPixels.data(), &bmi, DIB_RGB_COLORS);
+            if (GetDIBits(hdcScreen, iconInfo.hbmMask, 0, height, maskPixels.data(), &bmi, DIB_RGB_COLORS) == 0) {
+                return false;
+            }
 
             // Check if the color bitmap actually utilizes the alpha channel
             bool hasAlphaChannel = false;
@@ -464,7 +485,9 @@ static bool ReadCursor(CursorPicture& picture) {
             // The top half of hbmMask is the AND mask, bottom half is XOR mask.
             std::vector<uint8_t> maskPixels((size_t)width * (height * 2) * 4);
             resetHeader(height * 2); // Full height containing both masks
-            GetDIBits(hdcScreen, iconInfo.hbmMask, 0, height * 2, maskPixels.data(), &bmi, DIB_RGB_COLORS);
+            if (GetDIBits(hdcScreen, iconInfo.hbmMask, 0, height * 2, maskPixels.data(), &bmi, DIB_RGB_COLORS) == 0) {
+                return false;
+            }
 
             for (int i = 0; i < width * height; i++) {
                 // Top half is AND mask
@@ -490,12 +513,6 @@ static bool ReadCursor(CursorPicture& picture) {
                 out[i * 4 + 3] = a;
             }
         }
-
-        ReleaseDC(NULL, hdcScreen);
-
-        // Clean up icon info
-        if (iconInfo.hbmColor) DeleteObject(iconInfo.hbmColor);
-        if (iconInfo.hbmMask) DeleteObject(iconInfo.hbmMask);
 
         picture.width = width;
         picture.height = height;
@@ -677,74 +694,67 @@ Napi::Number Mouse::getIconId(const Napi::CallbackInfo& info) {
 }
 
 
-// reads a coordinate argument, or throws and returns false
-static bool ParseCoordinate(const Napi::CallbackInfo& info, size_t index, double& value) {
-    Napi::Env env = info.Env();
-    if (info.Length() <= index) {
-        Napi::TypeError::New(env, "Expected " + std::to_string(index + 1) + " argument").ThrowAsJavaScriptException();
-        return false;
-    }
-    if (!info[index].IsNumber()) {
-        Napi::TypeError::New(env, "Expected number argument").ThrowAsJavaScriptException();
-        return false;
-    }
-    value = info[index].As<Napi::Number>().DoubleValue();
-    if (!std::isfinite(value)) {
-        Napi::TypeError::New(env, "Expected finite number argument").ThrowAsJavaScriptException();
-        return false;
-    }
-    return true;
-}
-
 void Mouse::setX(const Napi::CallbackInfo& info) {
     double x = 0;
-    if (!ParseCoordinate(info, 0, x)) {
+    if (!RequireFinite(info, 0, x)) {
         return;
     }
+    ScreenSpace space;
     double currentX = 0;
     double currentY = 0;
-    if (!RequirePosition(info.Env(), currentX, currentY)) {
+    if (!RequirePosition(info.Env(), space, currentX, currentY)) {
         return;
     }
-    MoveTo(info.Env(), x, currentY);
+    MoveTo(info.Env(), space, x, currentY);
 }
 
 void Mouse::setY(const Napi::CallbackInfo& info) {
     double y = 0;
-    if (!ParseCoordinate(info, 0, y)) {
+    if (!RequireFinite(info, 0, y)) {
         return;
     }
+    ScreenSpace space;
     double currentX = 0;
     double currentY = 0;
-    if (!RequirePosition(info.Env(), currentX, currentY)) {
+    if (!RequirePosition(info.Env(), space, currentX, currentY)) {
         return;
     }
-    MoveTo(info.Env(), currentX, y);
+    MoveTo(info.Env(), space, currentX, y);
 }
 
 void Mouse::setPosition(const Napi::CallbackInfo& info) {
     double x = 0;
     double y = 0;
-    if (!ParseCoordinate(info, 0, x) || !ParseCoordinate(info, 1, y)) {
+    if (!RequireArgs(info, 2) || !RequireFinite(info, 0, x) || !RequireFinite(info, 1, y)) {
         return;
     }
-    MoveTo(info.Env(), x, y);
+    MoveTo(info.Env(), ScreenSpace(), x, y);
 }
 
 
 // moveBy's limit, in mouse counts either way: far more than one event of a
 // real mouse carries
 static const double MAX_MOVE_COUNTS = 100000;
+static const char* const MOVE_RANGE_MESSAGE = "Distance out of range (-100000 to 100000)";
 
-// reads two finite numbers of at most `limit` either way, or throws and
-// returns false
-static bool ParsePair(const Napi::CallbackInfo& info, double limit, const char* rangeMessage, double& a, double& b) {
-    if (!ParseCoordinate(info, 0, a) || !ParseCoordinate(info, 1, b)) {
+// reads finite numbers of at most `limit` either way into `values`, one per
+// argument, or throws and returns false
+static bool ParseLimited(const Napi::CallbackInfo& info, double limit, const char* rangeMessage,
+        std::initializer_list<double*> values) {
+    if (!RequireArgs(info, values.size())) {
         return false;
     }
-    if (std::fabs(a) > limit || std::fabs(b) > limit) {
-        Napi::RangeError::New(info.Env(), rangeMessage).ThrowAsJavaScriptException();
-        return false;
+    size_t index = 0;
+    for (double* value : values) {
+        if (!RequireFinite(info, index++, *value)) {
+            return false;
+        }
+    }
+    for (double* value : values) {
+        if (std::fabs(*value) > limit) {
+            Napi::RangeError::New(info.Env(), rangeMessage).ThrowAsJavaScriptException();
+            return false;
+        }
     }
     return true;
 }
@@ -770,16 +780,11 @@ static void TakeWhole(Remainder& remainder, double x, double y, long& wholeX, lo
     remainder.y -= wholeY;
 }
 
-// Mouse.moveBy(dx, dy): moves by a distance in mouse counts, as a mouse does;
-// what pointer-locked pages and games read (movementX/Y), which moving to a
-// position never makes. Fractions are added to the next call.
-void Mouse::moveBy(const Napi::CallbackInfo& info) {
-    Napi::Env env = info.Env();
-    double dx = 0;
-    double dy = 0;
-    if (!ParsePair(info, MAX_MOVE_COUNTS, "Distance out of range (-100000 to 100000)", dx, dy)) {
-        return;
-    }
+// Moves by a distance in mouse counts, as a mouse does; what pointer-locked
+// pages and games read (movementX/Y), which moving to a position never makes.
+// Fractions are added to the next call; the kept fraction of an axis moved by
+// 0 stays as it is.
+static void MoveBy(Napi::Env env, double dx, double dy) {
     long x = 0;
     long y = 0;
     TakeWhole(moveRemainder, dx, dy, x, y);
@@ -804,7 +809,7 @@ void Mouse::moveBy(const Napi::CallbackInfo& info) {
         // fields carry it whole, for applications that detached the pointer
         double currentX = 0;
         double currentY = 0;
-        if (!RequirePosition(env, currentX, currentY)) {
+        if (!RequirePosition(env, ScreenSpace(), currentX, currentY)) {
             return;
         }
         double targetX = currentX + x;
@@ -840,14 +845,39 @@ void Mouse::moveBy(const Napi::CallbackInfo& info) {
     #endif
 }
 
+// Mouse.moveBy(dx, dy)
+void Mouse::moveBy(const Napi::CallbackInfo& info) {
+    double dx = 0;
+    double dy = 0;
+    if (ParseLimited(info, MAX_MOVE_COUNTS, MOVE_RANGE_MESSAGE, { &dx, &dy })) {
+        MoveBy(info.Env(), dx, dy);
+    }
+}
+
+// Mouse.moveByX(dx): moveBy(dx, 0)
+void Mouse::moveByX(const Napi::CallbackInfo& info) {
+    double dx = 0;
+    if (ParseLimited(info, MAX_MOVE_COUNTS, MOVE_RANGE_MESSAGE, { &dx })) {
+        MoveBy(info.Env(), dx, 0);
+    }
+}
+
+// Mouse.moveByY(dy): moveBy(0, dy)
+void Mouse::moveByY(const Napi::CallbackInfo& info) {
+    double dy = 0;
+    if (ParseLimited(info, MAX_MOVE_COUNTS, MOVE_RANGE_MESSAGE, { &dy })) {
+        MoveBy(info.Env(), 0, dy);
+    }
+}
+
 
 // buttons pressed through buttonDown and not released yet, so releaseAll can
 // let them go (shared by every JS environment of the process)
 static std::mutex pressedButtonsMutex;
 static std::set<std::string> pressedButtons;
 
-// presses or releases a button ("left", ...); false, after throwing, when it fails
-static bool SendButton(Napi::Env env, const std::string& button, bool isDown) {
+// presses or releases a button ("left", ...); the error when it fails
+static InputError SendButton(const std::string& button, bool isDown) {
     #if defined(IS_WINDOWS)
         INPUT input = {0};
         input.type = INPUT_MOUSE;
@@ -867,8 +897,7 @@ static bool SendButton(Napi::Env env, const std::string& button, bool isDown) {
         }
 
         if (SendInput(1, &input, sizeof(INPUT)) != 1) {
-            ThrowInputBlocked(env, "SendInput sent nothing");
-            return false;
+            return InputBlockedError("SendInput sent nothing");
         }
 
     #elif defined(IS_MACOS)
@@ -913,8 +942,7 @@ static bool SendButton(Napi::Env env, const std::string& button, bool isDown) {
 
         CGEventRef mouseEvent = CGEventCreateMouseEvent(EventSource(), eventType, cursor, mouseButton);
         if (mouseEvent == NULL) {
-            Napi::Error::New(env, "Failed to create mouse event").ThrowAsJavaScriptException();
-            return false;
+            return InputError{ "", "Failed to create mouse event" };
         }
         CGEventSetIntegerValueField(mouseEvent, kCGMouseEventClickState, clickButton == (int)mouseButton ? clickCount : 1);
         CGEventSetFlags(mouseEvent, ModifierFlags());
@@ -940,13 +968,14 @@ static bool SendButton(Napi::Env env, const std::string& button, bool isDown) {
                 code = BTN_EXTRA;
             }
             std::string error;
-            const bool isDone = VirtualInput::PointerButton(code, isDown, error);
-            ThrowIfFailed(env, isDone, error);
-            return isDone;
+            if (!VirtualInput::PointerButton(code, isDown, error)) {
+                return InputError{ "", error };
+            }
+            return InputError();
         }
-        Display *display = RequireDisplay(env);
+        Display *display = XGetMainDisplay();
         if (display == NULL) {
-            return false;
+            return NoDisplayError();
         }
 
         unsigned int xButton = Button1;
@@ -963,12 +992,17 @@ static bool SendButton(Napi::Env env, const std::string& button, bool isDown) {
         XTestFakeButtonEvent(display, xButton, isDown ? True : False, CurrentTime);
         XFlush(display);
     #endif
-    return true;
+    return InputError();
 }
 
 static void PressButton(const Napi::CallbackInfo& info, bool isDown) {
     std::string button;
-    if (!ParseButton(info, button) || !SendButton(info.Env(), button, isDown)) {
+    if (!ParseButton(info, button)) {
+        return;
+    }
+    const InputError error = SendButton(button, isDown);
+    if (error.IsFailed()) {
+        ThrowInputError(info.Env(), error);
         return;
     }
     std::lock_guard<std::mutex> lock(pressedButtonsMutex);
@@ -980,17 +1014,24 @@ static void PressButton(const Napi::CallbackInfo& info, bool isDown) {
 }
 
 // Mouse.releaseAll(): releases every button buttonDown pressed and buttonUp did
-// not release yet, e.g. when the remote side of a session is gone
+// not release yet, e.g. when the remote side of a session is gone. Every one
+// is tried; those that fail stay held for the next call, and the first
+// failure is thrown.
 void Mouse::releaseAll(const Napi::CallbackInfo& info) {
     std::set<std::string> buttons;
     {
         std::lock_guard<std::mutex> lock(pressedButtonsMutex);
         buttons.swap(pressedButtons);
     }
-    for (const std::string& button : buttons) {
-        if (!SendButton(info.Env(), button, false)) {
-            return;
-        }
+    const InputError error = ReleaseEach(buttons, [](const std::string& button) {
+        return SendButton(button, false);
+    });
+    if (!buttons.empty()) {
+        std::lock_guard<std::mutex> lock(pressedButtonsMutex);
+        pressedButtons.insert(buttons.begin(), buttons.end());
+    }
+    if (error.IsFailed()) {
+        ThrowInputError(info.Env(), error);
     }
 }
 
@@ -1109,7 +1150,7 @@ void Mouse::scroll(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
     double x = 0;
     double y = 0;
-    if (!ParsePair(info, MAX_SCROLL_NOTCHES, "Scroll amount out of range (-10000 to 10000)", x, y)) {
+    if (!ParseLimited(info, MAX_SCROLL_NOTCHES, "Scroll amount out of range (-10000 to 10000)", { &x, &y })) {
         return;
     }
 
@@ -1214,23 +1255,26 @@ void Mouse::scroll(const Napi::CallbackInfo& info) {
 
 Napi::Object Mouse::Init(Napi::Env env, Napi::Object exports) {
     Napi::Object obj = Napi::Object::New(env);
-    obj.Set(Napi::String::New(env, "getX"), Napi::Function::New(env, Mouse::getX));
-    obj.Set(Napi::String::New(env, "getY"), Napi::Function::New(env, Mouse::getY));
+    SetFunction(env, obj, "getX", Mouse::getX);
+    SetFunction(env, obj, "getY", Mouse::getY);
+    SetFunction(env, obj, "getPosition", Mouse::getPosition);
 
-    obj.Set(Napi::String::New(env, "getIcon"), Napi::Function::New(env, Mouse::getIcon));
-    obj.Set(Napi::String::New(env, "getIconId"), Napi::Function::New(env, Mouse::getIconId));
+    SetFunction(env, obj, "getIcon", Mouse::getIcon);
+    SetFunction(env, obj, "getIconId", Mouse::getIconId);
 
-    obj.Set(Napi::String::New(env, "setX"), Napi::Function::New(env, Mouse::setX));
-    obj.Set(Napi::String::New(env, "setY"), Napi::Function::New(env, Mouse::setY));
-    obj.Set(Napi::String::New(env, "setPosition"), Napi::Function::New(env, Mouse::setPosition));
-    obj.Set(Napi::String::New(env, "moveBy"), Napi::Function::New(env, Mouse::moveBy));
+    SetFunction(env, obj, "setX", Mouse::setX);
+    SetFunction(env, obj, "setY", Mouse::setY);
+    SetFunction(env, obj, "setPosition", Mouse::setPosition);
+    SetFunction(env, obj, "moveBy", Mouse::moveBy);
+    SetFunction(env, obj, "moveByX", Mouse::moveByX);
+    SetFunction(env, obj, "moveByY", Mouse::moveByY);
 
-    obj.Set(Napi::String::New(env, "buttonDown"), Napi::Function::New(env, Mouse::buttonDown));
-    obj.Set(Napi::String::New(env, "buttonUp"), Napi::Function::New(env, Mouse::buttonUp));
-    obj.Set(Napi::String::New(env, "releaseAll"), Napi::Function::New(env, Mouse::releaseAll));
+    SetFunction(env, obj, "buttonDown", Mouse::buttonDown);
+    SetFunction(env, obj, "buttonUp", Mouse::buttonUp);
+    SetFunction(env, obj, "releaseAll", Mouse::releaseAll);
 
-    obj.Set(Napi::String::New(env, "scrollDown"), Napi::Function::New(env, Mouse::scrollDown));
-    obj.Set(Napi::String::New(env, "scrollUp"), Napi::Function::New(env, Mouse::scrollUp));
-    obj.Set(Napi::String::New(env, "scroll"), Napi::Function::New(env, Mouse::scroll));
+    SetFunction(env, obj, "scrollDown", Mouse::scrollDown);
+    SetFunction(env, obj, "scrollUp", Mouse::scrollUp);
+    SetFunction(env, obj, "scroll", Mouse::scroll);
     return obj;
 }

@@ -206,6 +206,50 @@ const withRegistryVersion = async function(version, check) {
     }
 };
 
+// stopping the service and changing its start type take administrator rights
+test("create() right after the service was told to stop starts it again", { "skip": skipNotAdmin, "timeout": 3 * 60 * 1000 }, async function() {
+    // The idle stop reports RUNNING until it has stopped, sc stop reports
+    // STOP_PENDING: both leave the pipe gone while StartService answers that
+    // it runs. sc returns once the service reports stop-pending.
+    for (let i = 0; i < 10; i++) {
+        (await Gamepad.create()).destroy();
+        try {
+            execFileSync("sc.exe", ["stop", SERVICE_NAME], { "stdio": "ignore" });
+        } catch {
+            // still starting, or stopped already: the next round tries again
+        }
+        const start = Date.now();
+        const gamepad = await Gamepad.create();
+        gamepad.destroy();
+        assert.ok(Date.now() - start < 8000, "round " + i + ": create() took " + (Date.now() - start) + " ms");
+    }
+});
+
+const serviceStartType = function() {
+    return powershell("(Get-Service -Name '" + SERVICE_NAME + "').StartType.ToString()");
+};
+let savedStartType = null;
+const restoreStartType = function() {
+    if (savedStartType !== null) {
+        powershell("Set-Service -Name '" + SERVICE_NAME + "' -StartupType " + savedStartType);
+        savedStartType = null;
+    }
+};
+after(restoreStartType);
+
+test("create() fails fast when the service cannot be started", { "skip": skipNotAdmin, "timeout": 60 * 1000 }, async function() {
+    savedStartType = serviceStartType();
+    try {
+        powershell("Stop-Service -Name '" + SERVICE_NAME + "' -Force; Set-Service -Name '" + SERVICE_NAME + "' -StartupType Disabled");
+        const start = Date.now();
+        await assert.rejects(Gamepad.create(), { "code": "EASYCONTROL_SERVICE_FAILED", "message": /Starting the gamepad service failed/ });
+        assert.ok(Date.now() - start < 2000, "rejected after " + (Date.now() - start) + " ms, not at once");
+    } finally {
+        restoreStartType();
+    }
+    (await Gamepad.create()).destroy();
+});
+
 test("an installed driver at the oldest version this addon takes works, with an update available", { "skip": skipNotAdmin }, async function() {
     const { required, available } = Gamepad.getDriverStatus();
     if (required === available) {

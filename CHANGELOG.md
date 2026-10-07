@@ -1,5 +1,49 @@
 # Changelog
 
+## 0.13.0 (unreleased)
+
+Fixes from the third review of the library, and movement along one axis.
+
+### Added
+
+- `Mouse.moveByX(dx)` / `Mouse.moveByY(dy)`: `moveBy` along one axis; the other axis's kept fraction stays.
+- `Mouse.getPosition()`: `{ x, y }` from one read, so both belong to the same moment.
+
+### Fixed
+
+- `releaseAll()` (keys and buttons) stopped at the first key or button it could not release and forgot the rest,
+  so neither a later call nor the exit hook could release them. It now tries every one, keeps those that failed
+  and throws the first failure. At exit, a failure releasing the keys no longer keeps the buttons held.
+- Windows: `Gamepad.create()` failed after 10 s when it met the gamepad service stopping by itself after being
+  idle; it starts the service again once it has stopped.
+- Gamepad indices: `NaN`, fractions and `Infinity` were taken as other buttons (`NaN` as 0, `1.7` as 1), and
+  `2 ** 32 + 1` as button 1; they throw now.
+- Windows: `Keyboard.setLayout` with a layout the user does not have added it to their languages; it widened the
+  layout's name byte by byte.
+- Windows: the gamepad service's error when its answer was short said "The operation completed successfully".
+- Windows: the pointer's coordinates are converted with one monitor layout per call (`setX`/`setY` made it twice).
+- Wayland: `moveBy` along one axis no longer sends a zero movement for the other.
+- `Mouse.getIconId()`'s docs: Linux cannot tell when the pointer is hidden.
+
+### Behaviour changes
+
+- Windows `Keyboard.setLayout` switches only to layouts the user has; another throws "Layout not found", as on
+  macOS and Linux. It throws `EASYCONTROL_INPUT_BLOCKED` when no window has the input (the secure desktop), and an
+  Error when that window does not take the request (an elevated one), instead of doing nothing.
+- `releaseAll()` throws when a key or button could not be released.
+- Gamepad indices that are not integers throw a `TypeError`.
+- Argument errors have uniform messages ("Expected 2 arguments", "Argument 1 must be a finite number", ...); their
+  types (`TypeError`, `RangeError`) are unchanged.
+- The stand-ins of an unsupported platform are no longer frozen, like the addon's objects, so test doubles can
+  replace their functions.
+- The addon's functions carry their names (`Mouse.getX.name` is `"getX"`), for stack traces.
+
+### Other
+
+- `npm run build` takes its options strictly: an unknown one is an error. It no longer deletes the files of builds
+  before 0.10 from `dist/`.
+- No gamepad driver change: the installed driver 3 serves this version, no reinstall.
+
 ## 0.12.0
 
 What a remote desktop needs from the library: movement games and pointer-locked pages read, smooth scrolling,

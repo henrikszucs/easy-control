@@ -300,7 +300,8 @@ test("two quick clicks make a double click, two slow ones do not", async functio
     }), "two clicks 0.9 s apart made a double click");
 });
 
-test("moveBy reaches a pointer-locked page as movement", async function() {
+// runs fn with the page's pointer locked, as a game holds it
+const withPointerLock = async function(fn) {
     const point = centre(regions.pad);
     Mouse.setPosition(point.x, point.y);
     await sleep(50);
@@ -311,28 +312,7 @@ test("moveBy reaches a pointer-locked page as movement", async function() {
         return e["type"] === "pointerlockchange" && e["isLocked"];
     });
     try {
-        // movement while locked, summed: the pointer speed may scale it
-        const move = async function(dx, dy) {
-            const mark = events.length;
-            Mouse.moveBy(dx, dy);
-            await waitFor(mark, "locked mousemove", function(e) {
-                return e["type"] === "mousemove" && e["isLocked"];
-            });
-            await sleep(100);
-            let x = 0;
-            let y = 0;
-            for (const e of events.slice(mark)) {
-                if (e["type"] === "mousemove" && e["isLocked"]) {
-                    x += e["movementX"];
-                    y += e["movementY"];
-                }
-            }
-            return { "x": x, "y": y };
-        };
-        const right = await move(40, 0);
-        assert(right.x > 0, "moveBy(40, 0): movementX " + right.x + " should be positive");
-        const up = await move(0, -40);
-        assert(up.y < 0, "moveBy(0, -40): movementY " + up.y + " should be negative");
+        await fn();
     } finally {
         mark = events.length;
         await call("unlockPointer()");
@@ -340,6 +320,64 @@ test("moveBy reaches a pointer-locked page as movement", async function() {
             return e["type"] === "pointerlockchange" && !e["isLocked"];
         }).catch(function() {});
     }
+};
+
+// The movement a locked page reads from one call, summed: the pointer speed
+// may scale it. With `isExpected` false, none is waited for (a fraction that
+// does not make a count yet), only what arrives in a moment is summed.
+const lockedMovement = async function(move, isExpected = true) {
+    const mark = events.length;
+    move();
+    if (isExpected) {
+        await waitFor(mark, "locked mousemove", function(e) {
+            return e["type"] === "mousemove" && e["isLocked"];
+        });
+    }
+    await sleep(100);
+    let x = 0;
+    let y = 0;
+    let count = 0;
+    for (const e of events.slice(mark)) {
+        if (e["type"] === "mousemove" && e["isLocked"]) {
+            x += e["movementX"];
+            y += e["movementY"];
+            count++;
+        }
+    }
+    return { "x": x, "y": y, "count": count };
+};
+
+test("moveBy reaches a pointer-locked page as movement", async function() {
+    await withPointerLock(async function() {
+        const right = await lockedMovement(function() { Mouse.moveBy(40, 0); });
+        assert(right.x > 0, "moveBy(40, 0): movementX " + right.x + " should be positive");
+        const up = await lockedMovement(function() { Mouse.moveBy(0, -40); });
+        assert(up.y < 0, "moveBy(0, -40): movementY " + up.y + " should be negative");
+    });
+});
+
+test("moveByX and moveByY move a pointer-locked page along one axis, keeping the other's fraction", async function() {
+    await withPointerLock(async function() {
+        const right = await lockedMovement(function() { Mouse.moveByX(20); });
+        assert(right.x > 0 && right.y === 0, "moveByX(20): movement " + right.x + "," + right.y + ", expected x > 0, y 0");
+        const up = await lockedMovement(function() { Mouse.moveByY(-20); });
+        assert(up.x === 0 && up.y < 0, "moveByY(-20): movement " + up.x + "," + up.y + ", expected x 0, y < 0");
+
+        // 0.8 of a count kept for y; moveByX's fractions leave it alone
+        for (let i = 0; i < 2; i++) {
+            const none = await lockedMovement(function() { Mouse.moveBy(0, 0.4); }, false);
+            assert(none.count === 0, "moveBy(0, 0.4) moved before a count was whole");
+        }
+        let x = 0;
+        for (let i = 0; i < 3; i++) {
+            const step = await lockedMovement(function() { Mouse.moveByX(0.4); }, i === 2);
+            assert(step.y === 0, "moveByX(0.4) moved y by " + step.y);
+            x += step.x;
+        }
+        assert(x > 0, "three moveByX(0.4) made no count");
+        const kept = await lockedMovement(function() { Mouse.moveBy(0, 0.4); });
+        assert(kept.y > 0 && kept.x === 0, "the y fraction was not kept: movement " + kept.x + "," + kept.y);
+    });
 });
 
 test("setX and setY move the pointer along one axis", async function() {
@@ -557,18 +595,23 @@ test("a held modifier applies to the next key", async function() {
     }
 });
 
-test("Keyboard.releaseAll releases a key still held down", async function() {
+test("Keyboard.releaseAll releases every key still held down", async function() {
     await call("blurText()");
     await requireFocus();
     const mark = events.length;
-    Keyboard.keyDown("KeyJ");
-    await waitFor(mark, "KeyJ keydown", function(e) {
-        return e["type"] === "keydown" && e["code"] === "KeyJ";
-    });
+    const held = ["KeyJ", "ShiftLeft", "Digit7"];
+    for (const code of held) {
+        Keyboard.keyDown(code);
+        await waitFor(mark, code + " keydown", function(e) {
+            return e["type"] === "keydown" && e["code"] === code;
+        });
+    }
     Keyboard.releaseAll();
-    await waitFor(mark, "KeyJ keyup from releaseAll", function(e) {
-        return e["type"] === "keyup" && e["code"] === "KeyJ";
-    });
+    for (const code of held) {
+        await waitFor(mark, code + " keyup from releaseAll", function(e) {
+            return e["type"] === "keyup" && e["code"] === code;
+        });
+    }
     // nothing left to release
     const after = events.length;
     Keyboard.releaseAll();
@@ -578,18 +621,24 @@ test("Keyboard.releaseAll releases a key still held down", async function() {
     }), "a second releaseAll released something again");
 });
 
-test("Mouse.releaseAll releases a button still held down", async function() {
+test("Mouse.releaseAll releases every button still held down", async function() {
     const point = centre(regions.pad);
     const mark = events.length;
     Mouse.setPosition(point.x, point.y);
-    Mouse.buttonDown("left");
-    await waitFor(mark, "mousedown", function(e) {
-        return e["type"] === "mousedown" && e["button"] === 0;
-    });
+    // the DOM's button numbers
+    const held = { "left": 0, "right": 2 };
+    for (const [btn, number] of Object.entries(held)) {
+        Mouse.buttonDown(btn);
+        await waitFor(mark, btn + " mousedown", function(e) {
+            return e["type"] === "mousedown" && e["button"] === number;
+        });
+    }
     Mouse.releaseAll();
-    await waitFor(mark, "mouseup from releaseAll", function(e) {
-        return e["type"] === "mouseup" && e["button"] === 0;
-    });
+    for (const [btn, number] of Object.entries(held)) {
+        await waitFor(mark, btn + " mouseup from releaseAll", function(e) {
+            return e["type"] === "mouseup" && e["button"] === number;
+        });
+    }
 });
 
 test("type enters text regardless of the keyboard layout", async function() {
