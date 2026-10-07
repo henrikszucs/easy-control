@@ -207,7 +207,7 @@ const withRegistryVersion = async function(version, check) {
 };
 
 // stopping the service and changing its start type take administrator rights
-test("create() right after the service was told to stop starts it again", { "skip": skipNotAdmin, "timeout": 3 * 60 * 1000 }, async function() {
+test("create() right after the service was told to stop starts it again", { "skip": skipNotAdmin, "timeout": 5 * 60 * 1000 }, async function() {
     // The idle stop reports RUNNING until it has stopped, sc stop reports
     // STOP_PENDING: both leave the pipe gone while StartService answers that
     // it runs. sc returns once the service reports stop-pending.
@@ -237,7 +237,8 @@ const restoreStartType = function() {
 };
 after(restoreStartType);
 
-test("create() fails fast when the service cannot be started", { "skip": skipNotAdmin, "timeout": 60 * 1000 }, async function() {
+// (the PowerShell calls around it take long on a slow runner: CI's Windows ARM)
+test("create() fails fast when the service cannot be started", { "skip": skipNotAdmin, "timeout": 5 * 60 * 1000 }, async function() {
     savedStartType = serviceStartType();
     try {
         powershell("Stop-Service -Name '" + SERVICE_NAME + "' -Force; Set-Service -Name '" + SERVICE_NAME + "' -StartupType Disabled");

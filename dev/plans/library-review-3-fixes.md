@@ -54,6 +54,10 @@ into `platform.h` (14, Linux part) and the `getIconId` docs (10, Linux part)).
 - CI installs `x11-xserver-utils` for `xmodmap`, which the spare-key test counts the spare keys with.
 - Not verified: Wayland (the Caps Lock note in the README, `type()` and the wheel through XWayland and uinput: no
   runner; the wheel arithmetic is, by `test:native`).
+- CI (run 37590340067, `2c1a7ea`): Windows x64, Linux x64 (Node 22, 24) and ARM64 with the new X11 tests, macOS
+  (phases 1 and 2 compile there) passed. Windows ARM64 failed one test: "create() fails fast when the service
+  cannot be started" ran past its 60 s timeout, cancelled before its assertions - the PowerShell calls around it
+  take tens of seconds on that runner (the registry version tests 45 s each). Its timeout is now 5 minutes.
 
 2026-10-07: the plan was checked against the code (no change made to the code). Every line reference and every
 claim about today's behaviour held; corrected from that check: the exit hook (1), the Wayland `PointerMoveBy` change
