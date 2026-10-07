@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.13.0 (unreleased)
+## 0.13.0
 
 Fixes from the third review of the library, and movement along one axis.
 

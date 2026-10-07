@@ -1,6 +1,7 @@
 # Plan: fixes from the third library review
 
-Status: phases 1 and 2 done; phase 3 coded but for 2 (waits for a Mac), to be checked by CI; phase 4 to do. Covers the review of 2026-10-07 (bugs, efficiency, simplification) and one addition asked for
+Status: done, released as 0.13.0 - all but 2 (macOS Caps Lock from the system), which waits for a check on a Mac
+and moves to a later release. Covers the review of 2026-10-07 (bugs, efficiency, simplification) and one addition asked for
 with it: `Mouse.moveByX(dx)` / `Mouse.moveByY(dy)`. Target release: 0.13.0 (new API, no breaking change except
 the `SetLayout` ones in Decisions 4, gamepad indices that are not integers (item 8) and the uniform argument error
 messages (14)).
@@ -72,9 +73,25 @@ into `platform.h` (14, Linux part) and the `getIconId` docs (10, Linux part)).
 - Tests: a macOS test that `create()` names its failure ("macOS 26" before Darwin 25, else one of the three); the
   worker stress test gets a macOS-only case pressing modifiers and buttons from four workers (skipped where
   Accessibility is granted, as real input would go out).
-- Verified so far: Windows builds and its tests pass (these are macOS-only paths). Not compiled here: the Swift and
-  the Objective-C++ - CI's macOS job builds and tests them. Not verifiable in CI: an activated pad (macOS 26 and
-  the entitlement).
+- Verified: Windows builds and its tests pass (these are macOS-only paths); CI (run 37606414437, `6b565bb`) built and
+  tested every target, macOS included, so the Swift and the Objective-C++ compile and the macOS tests pass. The job
+  logs need signing in, so whether the macOS `create()` test ran or skipped there is not known. Not verifiable in
+  CI: an activated pad (macOS 26 and the entitlement).
+
+2026-10-07, phase 4 (release 0.13.0).
+
+- By hand on the dev machine (Windows 11), with a script holding F13 and acting the moment
+  `Platform.getInputBlock()` turned `"secure-desktop"` after Win+L: `releaseAll()` threw `EASYCONTROL_INPUT_BLOCKED`,
+  and a second call threw again - the key was kept (the old code emptied its set at the first failure); after the
+  unlock `releaseAll()` worked, and once more found nothing held. `setLayout` threw `EASYCONTROL_INPUT_BLOCKED` ("no
+  foreground window") on the lock screen and worked after. Windows itself had let go of F13 at the desktop switch
+  (`GetAsyncKeyState` false after the unlock), easy-control's set still held it until `releaseAll`. A first try
+  was too slow: Windows Hello's face unlock ended the lock within about 2 s, so the script acts at once now.
+- Not done: `setLayout` with an elevated window in front (the access error) - the elevated window was not in front
+  while the check ran, and the release went ahead without it.
+- 2 stays out of this release (Decisions 10): no Mac with Accessibility to check posted Caps Lock presses on; the
+  CHANGELOG does not list it.
+- Version 0.13.0; `dist/` gets every target's build from CI's update-dist run.
 
 2026-10-07: the plan was checked against the code (no change made to the code). Every line reference and every
 claim about today's behaviour held; corrected from that check: the exit hook (1), the Wayland `PointerMoveBy` change

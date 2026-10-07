@@ -1,4 +1,4 @@
-/*! easy-control v0.12.0 | LGPL-3.0-only | https://github.com/henrikszucs/easy-control */
+/*! easy-control v0.13.0 | LGPL-3.0-only | https://github.com/henrikszucs/easy-control */
 // Type definitions for easy-control. src/build.js copies them to
 // dist/easy-control.d.cts (require) and dist/easy-control.d.mts (import, which
 // also has the default export).
