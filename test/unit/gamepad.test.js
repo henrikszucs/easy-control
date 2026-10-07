@@ -51,6 +51,19 @@ test("Gamepad.create rejects with an Error that says why", { "skip": !skipNoDriv
     assert.deepEqual(Gamepad.list(), [], "a failed create leaves nothing in the list");
 });
 
+test("macOS: create() says which of its three failures it met", { "skip": (os.platform() !== "darwin" && "macOS only") || (!skipNoDriver && "a virtual gamepad can be made here") }, async function() {
+    await assert.rejects(Gamepad.create(), function(error) {
+        assert.equal(error.code, "EASYCONTROL_CREATE_FAILED");
+        // before macOS 26 (Darwin 25) there is no HIDVirtualDevice to make
+        if (Number(os.release().split(".")[0]) < 25) {
+            assert.match(error.message, /macOS 26/);
+        } else {
+            assert.match(error.message, /macOS 26|activating it failed|activation did not finish/);
+        }
+        return true;
+    });
+});
+
 test("a gamepad is only made by Gamepad.create", function() {
     assert.throws(function() { new Gamepad.create.Gamepad(); }, { "name": "TypeError", "message": /Gamepad\.create\(\)/ });
 });

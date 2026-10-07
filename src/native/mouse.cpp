@@ -77,7 +77,7 @@ static Napi::Object CursorToObject(Napi::Env env, CursorPicture picture) {
 #if defined(IS_MACOS)
 // The last press, for the click count of the next (see SendButton): its
 // button, when and where; the count of the press and of the moves and release
-// that belong to it.
+// that belong to it. Used holding an InputStateLock (platform.h).
 static const double CLICK_DISTANCE = 4;
 static int clickButton = -1;
 static CFAbsoluteTime clickTime = 0;
@@ -215,6 +215,7 @@ static bool GetPosition(const ScreenSpace& space, double& x, double& y) {
 // movement in its delta fields: applications that have detached the pointer
 // from the mouse (pointer lock, games) read those, not the position.
 static bool PostMove(CGPoint target, int64_t dx, int64_t dy) {
+    InputStateLock lock;
     CGEventType eventType = kCGEventMouseMoved;
     CGMouseButton mouseButton = kCGMouseButtonLeft;
     const uint32_t pressed = PressedButtons();
@@ -907,6 +908,7 @@ static InputError SendButton(const std::string& button, bool isDown) {
         }
 
     #elif defined(IS_MACOS)
+        InputStateLock lock;
         CGPoint cursor = CGPointZero;
         CGEventRef event = CGEventCreate(NULL);
         if (event != NULL) {
@@ -1088,7 +1090,10 @@ static void Scroll(const Napi::CallbackInfo& info, bool isForward) {
             Napi::Error::New(env, "Failed to create scroll event").ThrowAsJavaScriptException();
             return;
         }
-        CGEventSetFlags(scrollEvent, ModifierFlags());
+        {
+            InputStateLock lock;
+            CGEventSetFlags(scrollEvent, ModifierFlags());
+        }
         CGEventPost(kCGHIDEventTap, scrollEvent);
         CFRelease(scrollEvent);
 
@@ -1202,7 +1207,10 @@ void Mouse::scroll(const Napi::CallbackInfo& info) {
             return;
         }
         CGEventSetIntegerValueField(scrollEvent, kCGScrollWheelEventIsContinuous, 1);
-        CGEventSetFlags(scrollEvent, ModifierFlags());
+        {
+            InputStateLock lock;
+            CGEventSetFlags(scrollEvent, ModifierFlags());
+        }
         CGEventPost(kCGHIDEventTap, scrollEvent);
         CFRelease(scrollEvent);
 

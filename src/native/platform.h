@@ -127,6 +127,7 @@ inline void ThrowInputError(Napi::Env env, const InputError& inputError) {
 
 #elif defined(IS_MACOS)
     #include <ApplicationServices/ApplicationServices.h>
+    #include <mutex>
 
     // One event source for every synthesized event, sharing the HID system's
     // state, so the events look like they come from the same device.
@@ -142,16 +143,32 @@ inline void ThrowInputError(Napi::Env env, const InputError& inputError) {
         return source;
     }
 
+    // What the keyboard and the mouse keep between calls - the modifiers and
+    // Caps Lock held through keyDown (keyboard.cpp), the buttons held, the
+    // last press for the click count (mouse.cpp) - is shared by every thread
+    // the addon is used from (workers too): it is read and written holding
+    // InputStateLock, for as long as an event is being made from it. It is
+    // recursive: a step may call a helper that takes it too.
+    inline std::recursive_mutex& InputStateMutex() {
+        static std::recursive_mutex mutex;
+        return mutex;
+    }
+
+    struct InputStateLock {
+        std::lock_guard<std::recursive_mutex> guard{InputStateMutex()};
+    };
+
     // Modifier keys held down through Keyboard.keyDown. Events made with
     // CGEventCreate* do not pick them up by themselves, so every keyboard and
-    // mouse event gets them set.
+    // mouse event gets them set. Use it holding an InputStateLock.
     inline CGEventFlags& ModifierFlags() {
         static CGEventFlags flags = 0;
         return flags;
     }
 
     // Mouse buttons held down through Mouse.buttonDown (bit = CGMouseButton),
-    // so a move while one is held is posted as a drag.
+    // so a move while one is held is posted as a drag. Use it holding an
+    // InputStateLock.
     inline uint32_t& PressedButtons() {
         static uint32_t buttons = 0;
         return buttons;

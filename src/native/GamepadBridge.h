@@ -4,7 +4,9 @@
 #import <Foundation/Foundation.h>
 
 @interface GamepadBridge : NSObject
-+ (int)createGamepad;
+// the id, or -1 unavailable, -2 the activation failed (why in error), -3 it
+// did not finish in time
++ (int)createGamepad:(NSMutableString*)error;
 + (BOOL)destroyGamepad:(int)gamepadId;
 + (BOOL)buttonDown:(int)gamepadId button:(int)buttonId;
 + (BOOL)buttonUp:(int)gamepadId button:(int)buttonId;

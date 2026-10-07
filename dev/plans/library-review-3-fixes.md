@@ -1,6 +1,6 @@
 # Plan: fixes from the third library review
 
-Status: phases 1 and 2 done; phases 3 and 4 to do. Covers the review of 2026-10-07 (bugs, efficiency, simplification) and one addition asked for
+Status: phases 1 and 2 done; phase 3 coded but for 2 (waits for a Mac), to be checked by CI; phase 4 to do. Covers the review of 2026-10-07 (bugs, efficiency, simplification) and one addition asked for
 with it: `Mouse.moveByX(dx)` / `Mouse.moveByY(dy)`. Target release: 0.13.0 (new API, no breaking change except
 the `SetLayout` ones in Decisions 4, gamepad indices that are not integers (item 8) and the uniform argument error
 messages (14)).
@@ -58,6 +58,23 @@ into `platform.h` (14, Linux part) and the `getIconId` docs (10, Linux part)).
   (phases 1 and 2 compile there) passed. Windows ARM64 failed one test: "create() fails fast when the service
   cannot be started" ran past its 60 s timeout, cancelled before its assertions - the PowerShell calls around it
   take tens of seconds on that runner (the registry version tests 45 s each). Its timeout is now 5 minutes.
+  The next run (37592420608, `5325066`) passed on every target.
+
+2026-10-07, phase 3 coded (5's macOS part, 7, 14's Swift helper); 2 not started: no Mac to check on first
+(Decisions 10).
+
+- 7: `createGamepad` takes the id first (serial number `"EasyControl<id>"`), makes the device, and waits outside
+  `SwiftCode.lock` on a semaphore the activating `Task` signals (5 s); `-1` unavailable, `-2` activation failed (its
+  error's description passed out in an `NSMutableString`), `-3` timeout, the device torn down on both. Only an
+  active pad goes into `gamepads`. `withDevice` serves the six lookups.
+- 5: `InputStateLock` (a recursive mutex in `platform.h`) around `PostMove`, the macOS `SendButton`, the scroll
+  flags and `PostKey`.
+- Tests: a macOS test that `create()` names its failure ("macOS 26" before Darwin 25, else one of the three); the
+  worker stress test gets a macOS-only case pressing modifiers and buttons from four workers (skipped where
+  Accessibility is granted, as real input would go out).
+- Verified so far: Windows builds and its tests pass (these are macOS-only paths). Not compiled here: the Swift and
+  the Objective-C++ - CI's macOS job builds and tests them. Not verifiable in CI: an activated pad (macOS 26 and
+  the entitlement).
 
 2026-10-07: the plan was checked against the code (no change made to the code). Every line reference and every
 claim about today's behaviour held; corrected from that check: the exit hook (1), the Wayland `PointerMoveBy` change

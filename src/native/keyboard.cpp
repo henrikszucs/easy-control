@@ -563,7 +563,8 @@ static const ModifierKey ModifierKeys[] = {
     {kVK_Function,     kCGEventFlagMaskSecondaryFn, 0}
 };
 
-// modifier keys held now, a bit per ModifierKeys entry
+// modifier keys held now, a bit per ModifierKeys entry; with Caps Lock, used
+// holding an InputStateLock (platform.h)
 static uint32_t heldModifiers = 0;
 static bool isCapsLockOn = false;
 
@@ -592,6 +593,7 @@ static void UpdateModifierFlags() {
 // posts a key press or release; a modifier key goes as a flags-changed event
 // and is remembered, so later key and mouse events carry it
 static bool PostKey(CGKeyCode keycode, bool isDown) {
+    InputStateLock lock;
     const int modifier = ModifierIndex(keycode);
     if (modifier >= 0) {
         if (isDown) {

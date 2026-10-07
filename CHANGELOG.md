@@ -33,6 +33,11 @@ Fixes from the third review of the library, and movement along one axis.
 - Linux: the X11 connection was used from several threads at once (the addon in workers), which Xlib does not
   allow; every use is now under a lock, and `Keyboard.type` calls take turns.
 - Wayland: `Mouse.scroll` sent a wheel notch late when scrolling back across a notch (truncating division).
+- macOS: `Gamepad.create()` resolved before the virtual gamepad was activated, with a pad that might never work;
+  it now waits for the activation (at most 5 s) and rejects with what failed - unavailable (before macOS 26 or
+  without the entitlement), the activation failing, or not finishing in time. Each pad has its own serial number.
+- macOS: the held modifiers, buttons and the click count were shared by threads without a lock (the addon in
+  workers).
 - `Mouse.getIconId()`'s docs: Linux cannot tell when the pointer is hidden.
 
 ### Behaviour changes

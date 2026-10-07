@@ -282,7 +282,20 @@ static bool OpenPad(PadHandle& handle, std::string& message, std::string& code) 
         return true;
 
     #elif defined(IS_MACOS)
-        handle.gamepadId = [GamepadBridge createGamepad];
+        // it waits for the gamepad's activation, at most 5 s
+        NSMutableString* reason = [NSMutableString string];
+        handle.gamepadId = [GamepadBridge createGamepad:reason];
+        if (handle.gamepadId == -2) {
+            message = "The virtual gamepad was made, but activating it failed";
+            if (reason.length > 0) {
+                message += std::string(": ") + [reason UTF8String];
+            }
+            return false;
+        }
+        if (handle.gamepadId == -3) {
+            message = "The virtual gamepad was made, but its activation did not finish within 5 s";
+            return false;
+        }
         if (handle.gamepadId < 0) {
             message = "Failed to create the virtual gamepad (needs macOS 26 and the com.apple.developer.hid.virtual.device entitlement)";
             return false;

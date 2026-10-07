@@ -4,8 +4,8 @@
 
 @implementation GamepadBridge
 
-+ (int)createGamepad {
-    return [SwiftCode createGamepad];
++ (int)createGamepad:(NSMutableString*)error {
+    return (int)[SwiftCode createGamepad:error];
 }
 
 + (BOOL)destroyGamepad:(int)gamepadId {

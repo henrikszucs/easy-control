@@ -1,99 +1,103 @@
 import Foundation
 import CoreHID
 
+// what createGamepad returns when it makes no gamepad
+let CREATE_UNAVAILABLE = -1         // no HIDVirtualDevice: before macOS 26, or without the entitlement
+let CREATE_ACTIVATION_FAILED = -2   // the device was made, its activation failed
+let CREATE_ACTIVATION_TIMEOUT = -3  // the activation did not finish in time
+
 @objc
 public class SwiftCode: NSObject {
+    // the pads made, once active; every use of them is under the lock
     private static var gamepads: [Int: VirtualGamepadDevice] = [:]
     private static var nextId: Int = 1
     private static let lock = NSLock()
 
-    @objc public static func createGamepad() -> Int {
+    // how long create() waits for a pad's activation
+    private static let activationTimeout: Double = 5
+
+    // Makes a gamepad and waits until it is active, so a pad create() hands
+    // out works. The id, or CREATE_*, with what failed in `error`. Called off
+    // the JS thread; the wait is outside the lock, so a slow activation does
+    // not hold up the other pads.
+    @objc public static func createGamepad(_ error: NSMutableString) -> Int {
         lock.lock()
-        defer { lock.unlock() }
-
-        let device = VirtualGamepadDevice()
-
-        // Check if device creation was initiated successfully
-        if !device.isInitialized() {
-            return -1
-        }
-
         let gamepadId = nextId
         nextId += 1
-        gamepads[gamepadId] = device
+        lock.unlock()
 
+        // each its own serial number, so the system tells them apart
+        let device = VirtualGamepadDevice(serialNumber: "EasyControl\(gamepadId)")
+        if !device.isInitialized() {
+            return CREATE_UNAVAILABLE
+        }
+        switch device.waitUntilActive(timeout: activationTimeout) {
+        case .active:
+            break
+        case .failed(let reason):
+            device.destroy()
+            error.setString(reason)
+            return CREATE_ACTIVATION_FAILED
+        case .timedOut:
+            // an activation finishing later leaves no device behind
+            device.destroy()
+            return CREATE_ACTIVATION_TIMEOUT
+        }
+
+        lock.lock()
+        gamepads[gamepadId] = device
+        lock.unlock()
         return gamepadId
     }
 
-    @objc public static func destroyGamepad(_ gamepadId: Int) -> Bool {
+    // runs body with a pad, under the lock; false when there is no such pad
+    private static func withDevice(_ gamepadId: Int, _ body: (VirtualGamepadDevice) -> Bool) -> Bool {
         lock.lock()
         defer { lock.unlock() }
-
         guard let device = gamepads[gamepadId] else {
             return false
         }
+        return body(device)
+    }
 
-        device.destroy()
-        gamepads.removeValue(forKey: gamepadId)
-        return true
+    @objc public static func destroyGamepad(_ gamepadId: Int) -> Bool {
+        return withDevice(gamepadId) { device in
+            device.destroy()
+            gamepads.removeValue(forKey: gamepadId)
+            return true
+        }
     }
 
     @objc public static func buttonDown(_ gamepadId: Int, button buttonId: Int) -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-
-        guard let device = gamepads[gamepadId] else {
-            return false
-        }
-
-        return device.setButton(buttonIndex: buttonId, isDown: true)
+        return withDevice(gamepadId) { $0.setButton(buttonIndex: buttonId, isDown: true) }
     }
 
     @objc public static func buttonUp(_ gamepadId: Int, button buttonId: Int) -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-
-        guard let device = gamepads[gamepadId] else {
-            return false
-        }
-
-        return device.setButton(buttonIndex: buttonId, isDown: false)
+        return withDevice(gamepadId) { $0.setButton(buttonIndex: buttonId, isDown: false) }
     }
 
     @objc public static func setAxis(_ gamepadId: Int, axis axisId: Int, value: Int) -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-
-        guard let device = gamepads[gamepadId] else {
-            return false
-        }
-
-        return device.setAxis(axisIndex: axisId, value: Int16(clamping: value))
+        return withDevice(gamepadId) { $0.setAxis(axisIndex: axisId, value: Int16(clamping: value)) }
     }
 
     // between these, changes are kept and go as one report (setState)
     @objc public static func beginUpdate(_ gamepadId: Int) -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-
-        guard let device = gamepads[gamepadId] else {
-            return false
+        return withDevice(gamepadId) { device in
+            device.beginUpdate()
+            return true
         }
-
-        device.beginUpdate()
-        return true
     }
 
     @objc public static func endUpdate(_ gamepadId: Int) -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-
-        guard let device = gamepads[gamepadId] else {
-            return false
-        }
-
-        return device.endUpdate()
+        return withDevice(gamepadId) { $0.endUpdate() }
     }
+}
+
+// how a pad's activation ended, as createGamepad waited for it
+enum Activation {
+    case active
+    case failed(String)
+    case timedOut
 }
 
 // The gamepad's state, sent whole in every report
@@ -135,7 +139,13 @@ final class GamepadDelegate: HIDVirtualDeviceDelegate {
     // in the order they were made
     private var reports: AsyncStream<Data>.Continuation?
     private var pumpTask: Task<Void, Never>?
+    // made (not yet active); written before the device is shared, and after
+    // under SwiftCode's lock only
     private var initialized: Bool = false
+    // the activation's end: the Task sets activationError (nil when active),
+    // then signals; read after the wait only
+    private let activation = DispatchSemaphore(value: 0)
+    private var activationError: String?
     // while true, changes are kept and not sent (beginUpdate/endUpdate)
     private var isUpdating: Bool = false
 
@@ -179,7 +189,7 @@ final class GamepadDelegate: HIDVirtualDeviceDelegate {
         0xC0               // End Collection
     ]
 
-    public override init() {
+    public init(serialNumber: String) {
         self.currentState = GamepadState(
             buttons: 0,
             thumbLX: 0,
@@ -204,7 +214,7 @@ final class GamepadDelegate: HIDVirtualDeviceDelegate {
                 transport: .usb,
                 product: "easy-control Virtual Gamepad",
                 manufacturer: "easy-control",
-                serialNumber: "EasyControl001"
+                serialNumber: serialNumber
             )
 
             guard let hidDevice = HIDVirtualDevice(properties: properties) else {
@@ -221,15 +231,18 @@ final class GamepadDelegate: HIDVirtualDeviceDelegate {
             let stream = AsyncStream<Data> { continuation = $0 }
             self.reports = continuation
 
-            // activate, then send the reports one after another; reports made
-            // before the activation finishes wait in the stream
+            // activate (telling waitUntilActive how it went), then send the
+            // reports one after another
+            let activation = self.activation
             pumpTask = Task { [weak self] in
                 do {
                     try await hidDevice.activate(delegate: delegate)
                 } catch {
-                    self?.initialized = false
+                    self?.activationError = error.localizedDescription.isEmpty ? String(describing: error) : error.localizedDescription
+                    activation.signal()
                     return
                 }
+                activation.signal()
                 for await report in stream {
                     try? await hidDevice.dispatchInputReport(data: report, timestamp: SuspendingClock.now)
                 }
@@ -241,6 +254,17 @@ final class GamepadDelegate: HIDVirtualDeviceDelegate {
 
     @objc public func isInitialized() -> Bool {
         return initialized
+    }
+
+    // waits for the activation started by init, at most `timeout` seconds
+    func waitUntilActive(timeout: Double) -> Activation {
+        if activation.wait(timeout: .now() + timeout) == .timedOut {
+            return .timedOut
+        }
+        if let error = activationError {
+            return .failed(error)
+        }
+        return .active
     }
 
     @objc public func destroy() {
