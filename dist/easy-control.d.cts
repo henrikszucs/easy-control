@@ -45,6 +45,12 @@ export interface EasyControlError extends Error {
 /** A mouse button. */
 export type MouseButton = "left" | "middle" | "right" | "back" | "forward";
 
+/** The pointer's position, in the coordinates of `Screen.list()`. */
+export interface MousePosition {
+    x: number;
+    y: number;
+}
+
 /** The pointer's picture. */
 export interface MouseIcon {
     /** In physical pixels; 0 while the pointer is hidden. */
@@ -71,11 +77,17 @@ export interface Mouse {
     getX(): number;
     /** Throws when the position cannot be read (Windows: the secure desktop, `EASYCONTROL_INPUT_BLOCKED`). */
     getY(): number;
+    /**
+     * Both coordinates from one read, so they belong to the same moment; cheaper than `getX()`
+     * and `getY()`. Throws when the position cannot be read, as they do.
+     */
+    getPosition(): MousePosition;
     /** The pointer's picture; empty while it is hidden. */
     getIcon(): MouseIcon;
     /**
-     * A number that changes when the pointer's shape does; 0 while it is hidden. Cheap on
-     * Windows and Linux (poll it, call `getIcon` when it changes); a hash of the picture on macOS.
+     * A number that changes when the pointer's shape does; 0 while it is hidden on Windows and macOS
+     * (Linux cannot tell: XFixes reports no hidden state). Cheap on Windows and Linux (poll it, call
+     * `getIcon` when it changes); a hash of the picture on macOS.
      */
     getIconId(): number;
     setX(x: number): void;
@@ -89,9 +101,17 @@ export interface Mouse {
      * next call. At most 100000 either way.
      */
     moveBy(dx: number, dy: number): void;
+    /** `moveBy(dx, 0)`: moves horizontally only; the vertical fraction kept for the next call stays. */
+    moveByX(dx: number): void;
+    /** `moveBy(0, dy)`: moves vertically only; the horizontal fraction kept for the next call stays. */
+    moveByY(dy: number): void;
     buttonDown(button: MouseButton): void;
     buttonUp(button: MouseButton): void;
-    /** Releases every button `buttonDown` pressed and `buttonUp` did not release; also done when the process ends. */
+    /**
+     * Releases every button `buttonDown` pressed and `buttonUp` did not release; also done when the process ends.
+     * Every button is tried; those that could not be released stay held for the next call, and the first
+     * failure is thrown (Windows: `EASYCONTROL_INPUT_BLOCKED` on the secure desktop).
+     */
     releaseAll(): void;
     /**
      * Scrolls down, or right when `isHorizontal` is true. `amount` is in wheel notches:
@@ -137,7 +157,11 @@ export interface Keyboard {
     /** Presses a physical key, the same one whatever the layout; the layout decides what it types. Throws when the key is not supported. */
     keyDown(code: KeyCode): void;
     keyUp(code: KeyCode): void;
-    /** Releases every key `keyDown` pressed and `keyUp` did not release; also done when the process ends. */
+    /**
+     * Releases every key `keyDown` pressed and `keyUp` did not release; also done when the process ends.
+     * Every key is tried; those that could not be released stay held for the next call, and the first
+     * failure is thrown (Windows: `EASYCONTROL_INPUT_BLOCKED` on the secure desktop).
+     */
     releaseAll(): void;
     /** Whether this platform can press the key. */
     isKeySupported(code: KeyCode): boolean;
@@ -156,7 +180,12 @@ export interface Keyboard {
      * an input source ID like `"com.apple.keylayout.US"` (macOS), an XKB group name (Linux).
      */
     getLayout(): string;
-    /** Switches the layout (throws on Wayland). It changes what keys type, not which keys `keyDown` presses. */
+    /**
+     * Switches the layout (throws on Wayland). It changes what keys type, not which keys `keyDown` presses.
+     * Only to a layout the user has: an unknown one throws "Layout not found". On Windows it switches the
+     * window the input goes to, and throws `EASYCONTROL_INPUT_BLOCKED` when there is none (the secure
+     * desktop) and an Error when that window does not take the request (an elevated one).
+     */
     setLayout(layout: string): void;
     /** The same as `getLayout`, by its old name. */
     GetLayout(): string;
