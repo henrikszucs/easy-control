@@ -17,6 +17,7 @@
     #include <ApplicationServices/ApplicationServices.h>
     #import <AppKit/AppKit.h>
 #elif defined(IS_LINUX)
+    #include "scroll_math.h"
     #include "uinput.h"
     #include "wayland.h"
     #include <mutex>
@@ -189,6 +190,7 @@ static bool GetPosition(const ScreenSpace& space, double& x, double& y) {
             }
             // not moved yet: XWayland's idea of it is the best there is
         }
+        XDisplayLock lock;
         Display *display = XGetMainDisplay();
         if (display == NULL) {
             return false;
@@ -313,6 +315,7 @@ static void MoveTo(Napi::Env env, const ScreenSpace& space, double x, double y) 
             ThrowIfFailed(env, isDone, error);
             return;
         }
+        XDisplayLock lock;
         Display *display = RequireDisplay(env);
         if (display == NULL) {
             return;
@@ -590,6 +593,7 @@ static bool ReadCursor(CursorPicture& picture) {
         return true;
 
     #elif defined(IS_LINUX)
+        XDisplayLock lock;
         Display *display = XGetMainDisplay();
         if (display == NULL) {
             return false;
@@ -668,6 +672,7 @@ Napi::Number Mouse::getIconId(const Napi::CallbackInfo& info) {
         static int fixesEventBase = 0;
         static unsigned long serial = 0;
 
+        XDisplayLock lock;
         Display *display = XGetMainDisplay();
         if (display == NULL) {
             return Napi::Number::New(env, 0);
@@ -836,6 +841,7 @@ static void MoveBy(Napi::Env env, double dx, double dy) {
             ThrowIfFailed(env, isDone, error);
             return;
         }
+        XDisplayLock lock;
         Display *display = RequireDisplay(env);
         if (display == NULL) {
             return;
@@ -973,6 +979,7 @@ static InputError SendButton(const std::string& button, bool isDown) {
             }
             return InputError();
         }
+        XDisplayLock lock;
         Display *display = XGetMainDisplay();
         if (display == NULL) {
             return NoDisplayError();
@@ -1099,6 +1106,7 @@ static void Scroll(const Napi::CallbackInfo& info, bool isForward) {
             ThrowIfFailed(env, isDone, error);
             return;
         }
+        XDisplayLock lock;
         Display *display = RequireDisplay(env);
         if (display == NULL) {
             return;
@@ -1209,10 +1217,8 @@ void Mouse::scroll(const Napi::CallbackInfo& info) {
             long notchesY = 0;
             {
                 std::lock_guard<std::mutex> lock(remainderMutex);
-                notchesX = (wheelTotalX + wheelX) / 120 - wheelTotalX / 120;
-                notchesY = (wheelTotalY + wheelY) / 120 - wheelTotalY / 120;
-                wheelTotalX = (wheelTotalX + wheelX) % (120 * 1000);
-                wheelTotalY = (wheelTotalY + wheelY) % (120 * 1000);
+                notchesX = AddWheel(wheelTotalX, wheelX);
+                notchesY = AddWheel(wheelTotalY, wheelY);
             }
             std::string error;
             bool isDone = true;
@@ -1234,6 +1240,7 @@ void Mouse::scroll(const Napi::CallbackInfo& info) {
         if (notchesX == 0 && notchesY == 0) {
             return;
         }
+        XDisplayLock lock;
         Display *display = RequireDisplay(env);
         if (display == NULL) {
             return;

@@ -23,6 +23,16 @@ Fixes from the third review of the library, and movement along one axis.
 - Windows: the gamepad service's error when its answer was short said "The operation completed successfully".
 - Windows: the pointer's coordinates are converted with one monitor layout per call (`setX`/`setY` made it twice).
 - Wayland: `moveBy` along one axis no longer sends a zero movement for the other.
+- Linux: `Keyboard.type` with Caps Lock on typed letters in the wrong case; it now finds each character by what
+  the keys type with the lock keys as they are, and the group (layout) as it is. Characters on borrowed keys
+  (X11) follow Caps Lock and Shift as letters do.
+- X11: `Keyboard.type` dropped characters silently when no spare key was left to borrow; it types the rest and
+  throws naming them.
+- X11: of several characters borrowed in one `Keyboard.type` call, some reached applications as no character at
+  all (they refresh their keymaps lazily): every key a call needs is now borrowed before the first is pressed.
+- Linux: the X11 connection was used from several threads at once (the addon in workers), which Xlib does not
+  allow; every use is now under a lock, and `Keyboard.type` calls take turns.
+- Wayland: `Mouse.scroll` sent a wheel notch late when scrolling back across a notch (truncating division).
 - `Mouse.getIconId()`'s docs: Linux cannot tell when the pointer is hidden.
 
 ### Behaviour changes
@@ -31,6 +41,7 @@ Fixes from the third review of the library, and movement along one axis.
   macOS and Linux. It throws `EASYCONTROL_INPUT_BLOCKED` when no window has the input (the secure desktop), and an
   Error when that window does not take the request (an elevated one), instead of doing nothing.
 - `releaseAll()` throws when a key or button could not be released.
+- X11: `Keyboard.type` throws when it runs out of spare keys (it typed the rest silently before).
 - Gamepad indices that are not integers throw a `TypeError`.
 - Argument errors have uniform messages ("Expected 2 arguments", "Argument 1 must be a finite number", ...); their
   types (`TypeError`, `RangeError`) are unchanged.

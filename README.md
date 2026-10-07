@@ -156,8 +156,9 @@ Keyboard.type(text);
 // keyDown/keyUp for keys and shortcuts. "\n" (and "\r\n"), "\t", "\b" and "\x1b" press Enter, Tab,
 // Backspace and Escape, so pasted lines arrive as lines; an empty string does nothing.
 // Linux types each character with the key that makes it on the current layout, Shift and AltGr included
-// (on a Hungarian layout "@" is AltGr+V). A character the layout has no key for is put on a spare key on X11;
-// on Wayland it is skipped and the call throws naming it, once the rest is typed, unless:
+// (on a Hungarian layout "@" is AltGr+V), Caps Lock taken into account. A character the layout has no key for
+// is put on a spare key on X11 (when none is left - about 20 - the call throws naming the rest, once the
+// others are typed); on Wayland it is skipped and the call throws naming it, once the rest is typed, unless:
 Keyboard.type(text, { "unicodeFallback": true });
 // enters those characters with Ctrl+Shift+U and their code point, which GTK and IBus applications
 // understand - other applications get stray characters or shortcuts, hence it is off by default.
@@ -429,7 +430,8 @@ and other wlroots compositors, ...).
 - `Keyboard.keyDown/keyUp` press physical keys, as on the other platforms.
 - `Keyboard.type` presses the keys of the current layout, read from XWayland, so it needs XWayland. A character the
   layout has no key for is skipped, and the call throws naming them once the rest is typed - the compositor's keymap
-  is not a client's to change.
+  is not a client's to change. It takes Caps Lock and Num Lock into account as XWayland knows them, which it learns
+  from the compositor only while one of its windows has the focus: they can be stale, as `getLockState()` can.
 - `Keyboard.GetLayout` reads the layout from XWayland; `Keyboard.SetLayout` throws - every desktop has its own way.
 
 `EASY_CONTROL_BACKEND=x11` or `EASY_CONTROL_BACKEND=wayland` in the environment overrides the detection.

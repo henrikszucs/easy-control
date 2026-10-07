@@ -18,6 +18,7 @@
     #include <cstdio>
     #include <linux/input-event-codes.h>
     #include <X11/Xlib.h>
+    #include <X11/Xutil.h>
     #include <X11/keysym.h>
     #include <X11/extensions/XTest.h>
     #include <X11/XKBlib.h>
@@ -25,6 +26,7 @@
     #include <unistd.h>
 #endif
 
+#include <algorithm>
 #include <map>
 #include <mutex>
 #include <set>
@@ -740,44 +742,142 @@ static std::vector<KeyCode> SpareKeycodes(Display* display) {
     return spare;
 }
 
-// where a character is on the current layout: its key, and the level
-// (0 plain, 1 Shift, 2 AltGr, 3 Shift+AltGr); the lowest level wins
+// the modifiers type() can hold for a character, as bits
+static const unsigned HOLD_SHIFT = 1;
+static const unsigned HOLD_ALTGR = 2;
+
+// where a character is on the current layout: its key, and the modifiers
+// held for it (HOLD_*)
 struct KeyPlace {
     KeyCode keycode = 0;
-    int level = -1;
+    unsigned held = 0;
 };
-
-// a character, found by what the keys type; control characters (new line,
-// tab, ...) by their keysym, as no key types them as text
-static KeyPlace FindKey(Display* display, uint32_t codepoint, int group) {
-    KeyPlace place;
-    const KeySym controlKeysym = codepoint < 0x20 ? CodepointToKeysym(codepoint) : NoSymbol;
-    int minKeycode = 0;
-    int maxKeycode = 0;
-    XDisplayKeycodes(display, &minKeycode, &maxKeycode);
-    for (int level = 0; level < 4 && place.level < 0; level++) {
-        for (int keycode = minKeycode; keycode <= maxKeycode; keycode++) {
-            const KeySym keysym = XkbKeycodeToKeysym(display, (KeyCode)keycode, group, level);
-            if (keysym == NoSymbol) {
-                continue;
-            }
-            if (controlKeysym != NoSymbol ? keysym == controlKeysym : KeysymToCodepoint(keysym) == codepoint) {
-                place.keycode = (KeyCode)keycode;
-                place.level = level;
-                break;
-            }
-        }
-    }
-    return place;
-}
 
 // the modifier keys type() holds: their X keycodes, 0 when the layout has none
 struct TypingKeys {
     KeyCode shift;
     KeyCode altGr;
+    unsigned int altGrMask;     // the modifier AltGr sets, 0 when none
     KeyCode control;
     bool isWayland;
 };
+
+// a keymap from XkbGetMap, freed on every path
+struct KeymapGuard {
+    XkbDescPtr xkb = nullptr;
+    ~KeymapGuard() {
+        if (this->xkb != nullptr) {
+            XkbFreeKeyboard(this->xkb, 0, True);
+        }
+    }
+};
+
+// What the keys type now, read once per type() call: each character's key
+// and the modifiers to hold for it, with the locked modifiers (Caps Lock, Num
+// Lock) and the group as they are. Control characters by their keysym
+// (Return, Tab, ...), at no modifiers, as no key types them as text.
+struct TypingMap {
+    std::map<uint32_t, KeyPlace> characters;
+    std::map<KeySym, KeyCode> controls;
+    unsigned int lockedMods = 0;
+    int group = 0;
+};
+
+// the modifier sets a character can be typed with, fewest first; those the
+// layout cannot hold are left out (no Shift_L key; no AltGr key, or one that
+// sets no modifier, where the AltGr sets would be the plain ones)
+static std::vector<unsigned> HeldSets(const TypingKeys& keys) {
+    const bool hasShift = keys.shift != 0;
+    const bool hasAltGr = keys.altGr != 0 && keys.altGrMask != 0;
+    std::vector<unsigned> sets = { 0 };
+    if (hasShift) {
+        sets.push_back(HOLD_SHIFT);
+    }
+    if (hasAltGr) {
+        sets.push_back(HOLD_ALTGR);
+    }
+    if (hasShift && hasAltGr) {
+        sets.push_back(HOLD_SHIFT | HOLD_ALTGR);
+    }
+    return sets;
+}
+
+// What a key types with `held` down. The key's XKB type picks the level,
+// which covers Caps Lock on letter keys and Num Lock on the keypad; the rest
+// of Caps Lock is the clients' (XLookupString, xkbcommon): when Lock is on and
+// the key's type does not use it, they upper-case the keysym - so this does.
+static KeySym TypedKeysym(XkbDescPtr xkb, const TypingKeys& keys, const TypingMap& map, KeyCode keycode, unsigned held) {
+    unsigned int mods = map.lockedMods;
+    if (held & HOLD_SHIFT) {
+        mods |= ShiftMask;
+    }
+    if (held & HOLD_ALTGR) {
+        mods |= keys.altGrMask;
+    }
+    unsigned int consumed = 0;
+    KeySym keysym = NoSymbol;
+    if (!XkbTranslateKeyCode(xkb, keycode, XkbBuildCoreState(mods, map.group), &consumed, &keysym)) {
+        return NoSymbol;
+    }
+    if ((map.lockedMods & LockMask) && !(consumed & LockMask)) {
+        KeySym lower = keysym;
+        KeySym upper = keysym;
+        XConvertCase(keysym, &lower, &upper);
+        keysym = upper;
+    }
+    return keysym;
+}
+
+// puts what a key types with `held` down in the map, unless a character is
+// there already (with fewer modifiers, or on a lower keycode)
+static void AddKey(XkbDescPtr xkb, const TypingKeys& keys, TypingMap& map, KeyCode keycode, unsigned held) {
+    const KeySym keysym = TypedKeysym(xkb, keys, map, keycode, held);
+    if (keysym == NoSymbol) {
+        return;
+    }
+    if (keysym == XK_Return || keysym == XK_Tab || keysym == XK_BackSpace || keysym == XK_Escape) {
+        if (held == 0) {
+            map.controls.emplace(keysym, keycode);
+        }
+        return;
+    }
+    const uint32_t codepoint = KeysymToCodepoint(keysym);
+    if (codepoint >= 0x20 && codepoint != 0x7F) {
+        KeyPlace place;
+        place.keycode = keycode;
+        place.held = held;
+        map.characters.emplace(codepoint, place);
+    }
+}
+
+// the map of every key; the fewest modifiers win, then the lowest keycode
+// (with Num Lock on, "1" is on the top row and the keypad: the top row)
+static void BuildTypingMap(XkbDescPtr xkb, const TypingKeys& keys, TypingMap& map) {
+    for (unsigned held : HeldSets(keys)) {
+        for (int keycode = xkb->min_key_code; keycode <= xkb->max_key_code; keycode++) {
+            AddKey(xkb, keys, map, (KeyCode)keycode, held);
+        }
+    }
+}
+
+// where a character is; false when no key types it
+static bool FindKey(const TypingMap& map, uint32_t codepoint, KeyPlace& place) {
+    if (codepoint < 0x20) {
+        const auto control = map.controls.find(CodepointToKeysym(codepoint));
+        if (control == map.controls.end()) {
+            return false;
+        }
+        place.keycode = control->second;
+        place.held = 0;
+        return true;
+    }
+    const auto character = map.characters.find(codepoint);
+    if (character == map.characters.end()) {
+        return false;
+    }
+    place = character->second;
+    return true;
+}
 
 // presses or releases an X keycode: through the virtual keyboard on Wayland
 // (whose evdev codes are the X keycodes minus 8), through XTest on X11
@@ -789,10 +889,11 @@ static bool SendXKey(Display* display, const TypingKeys& keys, KeyCode keycode, 
     return true;
 }
 
-// taps a key at a level, holding Shift and AltGr as that level needs
-static bool TapAtLevel(Display* display, const TypingKeys& keys, KeyCode keycode, int level, std::string& error) {
-    const bool needsShift = level == 1 || level == 3;
-    const bool needsAltGr = level >= 2;
+// taps a key holding Shift and AltGr as `held` says; one step under the X lock
+static bool TapWithModifiers(Display* display, const TypingKeys& keys, KeyCode keycode, unsigned held, std::string& error) {
+    XDisplayLock lock;
+    const bool needsShift = (held & HOLD_SHIFT) != 0;
+    const bool needsAltGr = (held & HOLD_ALTGR) != 0;
     bool isDone = true;
     if (needsAltGr) {
         isDone = SendXKey(display, keys, keys.altGr, true, error);
@@ -813,32 +914,63 @@ static bool TapAtLevel(Display* display, const TypingKeys& keys, KeyCode keycode
 }
 
 // taps the key of a character the layout has; false when it has none
-static bool TapCharacter(Display* display, const TypingKeys& keys, uint32_t codepoint, int group, std::string& error) {
-    const KeyPlace place = FindKey(display, codepoint, group);
-    if (place.level < 0 || (place.level >= 2 && keys.altGr == 0) || (place.level % 2 == 1 && keys.shift == 0)) {
+static bool TapCharacter(Display* display, const TypingKeys& keys, const TypingMap& map, uint32_t codepoint, std::string& error) {
+    KeyPlace place;
+    if (!FindKey(map, codepoint, place)) {
         return false;
     }
-    return TapAtLevel(display, keys, place.keycode, place.level, error);
+    return TapWithModifiers(display, keys, place.keycode, place.held, error);
+}
+
+// X11: puts characters on spare keys for the rest of the call, and in the
+// map: each keycode with its keysym. A cased character goes as {lower, upper},
+// which the X server gives the ALPHABETIC type as it does a letter key's, so
+// both cases can be typed, Caps Lock and Shift working on it as on letters; an
+// uncased one as itself. All are borrowed before the first key is pressed:
+// clients refresh their keymaps lazily, and keys borrowed between presses
+// reached some of them as no symbol at all. The keys are read back, so they
+// are found in the map like any other.
+static void BorrowKeys(Display* display, XkbDescPtr xkb, const TypingKeys& keys, TypingMap& map,
+        const std::vector<std::pair<KeyCode, KeySym>>& borrowed) {
+    XDisplayLock lock;
+    for (const auto& entry : borrowed) {
+        KeySym keysyms[2] = { entry.second, entry.second };
+        XConvertCase(entry.second, &keysyms[0], &keysyms[1]);
+        XChangeKeyboardMapping(display, entry.first, 2, keysyms, 1);
+    }
+    XSync(display, False);
+    // (XkbGetKeySyms of the keys alone fails for keys that had no symbols)
+    XkbGetUpdatedMap(display, XkbKeySymsMask, xkb);
+    for (unsigned held : HeldSets(keys)) {
+        for (const auto& entry : borrowed) {
+            AddKey(xkb, keys, map, entry.first, held);
+        }
+    }
 }
 
 // GTK's and IBus's Unicode entry: Ctrl+Shift+U, the code point in hex, then
-// space; false when the layout lacks a key it needs
-static bool TypeUnicodeEntry(Display* display, const TypingKeys& keys, uint32_t codepoint, int group, std::string& error) {
-    const KeyPlace u = FindKey(display, 'u', group);
-    if (keys.control == 0 || keys.shift == 0 || u.level != 0) {
+// space; false when the layout lacks a key it needs. The U key may need Shift
+// (Caps Lock on): Ctrl+Shift+U starts the entry either way.
+static bool TypeUnicodeEntry(Display* display, const TypingKeys& keys, const TypingMap& map, uint32_t codepoint, std::string& error) {
+    KeyPlace u;
+    if (keys.control == 0 || keys.shift == 0 || !(FindKey(map, 'u', u) || FindKey(map, 'U', u)) || (u.held & HOLD_ALTGR)) {
         return false;
     }
-    bool isDone = SendXKey(display, keys, keys.control, true, error) && SendXKey(display, keys, keys.shift, true, error) &&
-        SendXKey(display, keys, u.keycode, true, error) && SendXKey(display, keys, u.keycode, false, error);
-    std::string releaseError;
-    SendXKey(display, keys, keys.shift, false, releaseError);
-    SendXKey(display, keys, keys.control, false, releaseError);
+    bool isDone = false;
+    {
+        XDisplayLock lock;
+        isDone = SendXKey(display, keys, keys.control, true, error) && SendXKey(display, keys, keys.shift, true, error) &&
+            SendXKey(display, keys, u.keycode, true, error) && SendXKey(display, keys, u.keycode, false, error);
+        std::string releaseError;
+        SendXKey(display, keys, keys.shift, false, releaseError);
+        SendXKey(display, keys, keys.control, false, releaseError);
+    }
     char hex[16];
     snprintf(hex, sizeof(hex), "%x", codepoint);
     for (const char* digit = hex; isDone && *digit != '\0'; digit++) {
-        isDone = TapCharacter(display, keys, (uint32_t)*digit, group, error);
+        isDone = TapCharacter(display, keys, map, (uint32_t)*digit, error);
     }
-    return isDone && TapCharacter(display, keys, ' ', group, error);
+    return isDone && TapCharacter(display, keys, map, ' ', error);
 }
 #endif
 
@@ -875,6 +1007,7 @@ static InputError SendKey(const std::string& key, bool isDown) {
             }
             return InputError();
         }
+        XDisplayLock lock;
         Display *display = XGetMainDisplay();
         if (display == NULL) {
             return NoDisplayError();
@@ -1085,18 +1218,18 @@ void Keyboard::type(const Napi::CallbackInfo& info) {
             isUnicodeFallback = info[1].As<Napi::Object>().Get("unicodeFallback").ToBoolean().Value();
         }
 
+        // One call at a time: a call keeps the map, the spare keys and what it
+        // borrowed across its steps. The X lock is taken per step (see
+        // platform.h), so other threads' calls go on while a text is typed.
+        static std::mutex typingMutex;
+        std::lock_guard<std::mutex> typing(typingMutex);
+
         Display *display = XGetMainDisplay();
         if (display == NULL) {
             Napi::Error::New(env, IsWaylandSession()
                 ? "Typing text on Wayland needs XWayland, to read the keyboard layout from"
                 : "Failed to open X display").ThrowAsJavaScriptException();
             return;
-        }
-
-        XkbStateRec state;
-        int group = 0;
-        if (XkbGetState(display, XkbUseCoreKbd, &state) == Success) {
-            group = state.group;
         }
 
         // On Wayland the keys go through the virtual keyboard, so they reach
@@ -1106,16 +1239,38 @@ void Keyboard::type(const Napi::CallbackInfo& info) {
         // the layout has no key for is put on a spare keycode for the
         // duration of the call, as xdotool does.
         TypingKeys keys;
-        keys.shift = XKeysymToKeycode(display, XK_Shift_L);
-        keys.altGr = XKeysymToKeycode(display, XK_ISO_Level3_Shift);
-        keys.control = XKeysymToKeycode(display, XK_Control_L);
-        keys.isWayland = IsWaylandSession();
+        TypingMap map;
+        KeymapGuard keymap;
+        {
+            XDisplayLock lock;
+            keys.shift = XKeysymToKeycode(display, XK_Shift_L);
+            keys.altGr = XKeysymToKeycode(display, XK_ISO_Level3_Shift);
+            keys.altGrMask = XkbKeysymToModifiers(display, XK_ISO_Level3_Shift);
+            keys.control = XKeysymToKeycode(display, XK_Control_L);
+            keys.isWayland = IsWaylandSession();
+            XkbStateRec state;
+            if (XkbGetState(display, XkbUseCoreKbd, &state) == Success) {
+                map.group = state.group;
+                map.lockedMods = state.locked_mods;
+            }
+            keymap.xkb = XkbGetMap(display, XkbAllClientInfoMask, XkbUseCoreKbd);
+            if (keymap.xkb != nullptr) {
+                BuildTypingMap(keymap.xkb, keys, map);
+            }
+        }
+        if (keymap.xkb == nullptr) {
+            Napi::Error::New(env, "Failed to read the keyboard map").ThrowAsJavaScriptException();
+            return;
+        }
 
-        std::vector<KeyCode> spare;
-        bool isSpareRead = false;
-        std::vector<std::pair<KeySym, KeyCode>> borrowed;
+        std::vector<std::pair<KeyCode, KeySym>> borrowed;
         std::string missing;
         std::string error;
+        const auto addMissing = [&missing](uint32_t codepoint) {
+            char hex[16];
+            snprintf(hex, sizeof(hex), "%sU+%04X", missing.empty() ? "" : ", ", codepoint);
+            missing += hex;
+        };
 
         // "\r\n" is one Enter, as on the other platforms
         std::vector<uint32_t> codepoints = DecodeUtf8(text);
@@ -1127,11 +1282,38 @@ void Keyboard::type(const Napi::CallbackInfo& info) {
             }
         }
 
-        for (uint32_t codepoint : codepoints) {
-            const KeySym keysym = CodepointToKeysym(codepoint);
+        // X11: what the layout has no key for goes on spare keys, borrowed for
+        // the call; one for both cases of a character (é and É)
+        if (!keys.isWayland) {
+            std::vector<KeySym> needed;
+            for (uint32_t codepoint : codepoints) {
+                KeyPlace place;
+                if (FindKey(map, codepoint, place)) {
+                    continue;
+                }
+                KeySym lower = CodepointToKeysym(codepoint);
+                KeySym upper = lower;
+                XConvertCase(lower, &lower, &upper);
+                if (std::find(needed.begin(), needed.end(), lower) == needed.end()) {
+                    needed.push_back(lower);
+                }
+            }
+            if (!needed.empty()) {
+                std::vector<KeyCode> spare;
+                {
+                    XDisplayLock lock;
+                    spare = SpareKeycodes(display);
+                }
+                for (size_t i = 0; i < needed.size() && i < spare.size(); i++) {
+                    borrowed.push_back(std::make_pair(spare[i], needed[i]));
+                }
+                BorrowKeys(display, keymap.xkb, keys, map, borrowed);
+            }
+        }
 
-            // on the layout, at any level up to Shift+AltGr
-            if (TapCharacter(display, keys, codepoint, group, error)) {
+        for (uint32_t codepoint : codepoints) {
+            // on the layout (or a borrowed key), with up to Shift+AltGr held
+            if (TapCharacter(display, keys, map, codepoint, error)) {
                 continue;
             }
             if (!error.empty()) {
@@ -1139,57 +1321,52 @@ void Keyboard::type(const Napi::CallbackInfo& info) {
             }
 
             if (keys.isWayland) {
-                if (!isUnicodeFallback || !TypeUnicodeEntry(display, keys, codepoint, group, error)) {
+                if (!isUnicodeFallback || !TypeUnicodeEntry(display, keys, map, codepoint, error)) {
                     if (!error.empty()) {
                         break;
                     }
-                    char hex[16];
-                    snprintf(hex, sizeof(hex), "%sU+%04X", missing.empty() ? "" : ", ", codepoint);
-                    missing += hex;
+                    addMissing(codepoint);
                 }
                 continue;
             }
 
-            // X11: on a borrowed key
-            KeyCode keycode = 0;
-            for (const auto& entry : borrowed) {
-                if (entry.first == keysym) {
-                    keycode = entry.second;
-                    break;
-                }
+            // X11: a borrowed key read back as typing something else is
+            // tapped as it is; no spare key was left for the others
+            KeySym lower = CodepointToKeysym(codepoint);
+            KeySym upper = lower;
+            XConvertCase(lower, &lower, &upper);
+            const auto entry = std::find_if(borrowed.begin(), borrowed.end(), [lower](const std::pair<KeyCode, KeySym>& borrow) {
+                return borrow.second == lower;
+            });
+            if (entry == borrowed.end()) {
+                addMissing(codepoint);
+            } else {
+                TapWithModifiers(display, keys, entry->first, 0, error);
             }
-            if (keycode == 0) {
-                if (!isSpareRead) {
-                    spare = SpareKeycodes(display);
-                    isSpareRead = true;
-                }
-                if (borrowed.size() >= spare.size()) {
-                    continue;   // no key left to put it on
-                }
-                keycode = spare[borrowed.size()];
-                KeySym keysyms[2] = {keysym, keysym};
-                XChangeKeyboardMapping(display, keycode, 2, keysyms, 1);
-                XSync(display, False);
-                borrowed.push_back(std::make_pair(keysym, keycode));
-            }
-            TapAtLevel(display, keys, keycode, 0, error);
         }
         if (!keys.isWayland) {
+            XDisplayLock lock;
             XSync(display, False);
         }
 
-        // give the borrowed keys back, once the clients have had the events
+        // give the borrowed keys back (their type goes back with the
+        // symbols), once the clients have had the events; the X lock is not
+        // held while waiting
         if (!borrowed.empty()) {
             usleep(25000);
+            XDisplayLock lock;
             for (const auto& entry : borrowed) {
                 KeySym keysyms[2] = {NoSymbol, NoSymbol};
-                XChangeKeyboardMapping(display, entry.second, 2, keysyms, 1);
+                XChangeKeyboardMapping(display, entry.first, 2, keysyms, 1);
             }
             XSync(display, False);
         }
 
         if (!error.empty()) {
             Napi::Error::New(env, error).ThrowAsJavaScriptException();
+        } else if (!missing.empty() && !keys.isWayland) {
+            Napi::Error::New(env, "Not on the current keyboard layout and no spare key left, not typed: " + missing)
+                .ThrowAsJavaScriptException();
         } else if (!missing.empty()) {
             Napi::Error::New(env, "Not on the current keyboard layout, not typed: " + missing +
                 (isUnicodeFallback ? "" : " (Keyboard.type(text, { unicodeFallback: true }) enters them in GTK and IBus applications)"))
@@ -1305,6 +1482,7 @@ Napi::String Keyboard::GetLayout(const Napi::CallbackInfo& info) {
         return Napi::String::New(env, layout);
 
     #elif defined(IS_LINUX)
+        XDisplayLock lock;
         Display *display = RequireDisplay(env);
         if (display == NULL) {
             return Napi::String::New(env, "");
@@ -1428,6 +1606,7 @@ void Keyboard::SetLayout(const Napi::CallbackInfo& info) {
             Napi::Error::New(env, "Setting the keyboard layout is not supported on Wayland").ThrowAsJavaScriptException();
             return;
         }
+        XDisplayLock lock;
         Display *display = RequireDisplay(env);
         if (display == NULL) {
             return;
@@ -1488,6 +1667,7 @@ Napi::Value Keyboard::getLockState(const Napi::CallbackInfo& info) {
     #elif defined(IS_LINUX)
         // the keyboard indicators, by name; on Wayland XWayland's, which follow
         // the compositor's
+        XDisplayLock lock;
         Display* display = RequireDisplay(env);
         if (display == NULL) {
             return env.Undefined();

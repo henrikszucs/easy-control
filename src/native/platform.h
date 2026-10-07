@@ -159,6 +159,7 @@ inline void ThrowInputError(Napi::Env env, const InputError& inputError) {
 
 #elif defined(IS_LINUX)
     #include <X11/Xlib.h>
+    #include <mutex>
     #include <string>
     #include <vector>
 
@@ -179,9 +180,33 @@ inline void ThrowInputError(Napi::Env env, const InputError& inputError) {
     // can be asked), from XRandR otherwise (defined in screen.cpp)
     std::vector<ScreenRect> ListScreens();
 
+    // The X11 connection is shared by every thread the addon is used from
+    // (workers too), and Xlib is not safe for two threads at once unless
+    // XInitThreads ran before any other Xlib call of the process - too late
+    // for an addon, whose host may have used Xlib already. So every use of the
+    // display is made holding XDisplayLock: around each step that calls Xlib,
+    // not around whole calls, so a call that waits (type() waits for its
+    // borrowed keys) does not hold up the others. It is recursive: a step may
+    // call a helper that takes it too.
+    //
+    // Lock order: Keyboard.type's typing mutex, then this lock, then
+    // VirtualInput's device mutex or the Wayland connection's mutex. Nothing
+    // holding a later one takes an earlier one (the screen list asks the
+    // compositor, lets go of its mutex, and only then falls back to XRandR).
+    inline std::recursive_mutex& XDisplayMutex() {
+        static std::recursive_mutex mutex;
+        return mutex;
+    }
+
+    struct XDisplayLock {
+        std::lock_guard<std::recursive_mutex> guard{XDisplayMutex()};
+    };
+
     // The X11 connection every module shares, opened on first use (and tried
-    // again on the next call while it cannot be opened).
+    // again on the next call while it cannot be opened). Use it holding an
+    // XDisplayLock.
     inline Display* XGetMainDisplay() {
+        XDisplayLock lock;
         static Display* display = nullptr;
         if (display == nullptr) {
             display = XOpenDisplay(nullptr);

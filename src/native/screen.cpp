@@ -215,6 +215,7 @@ static std::string EdidMonitorName(Display* display, RROutput output) {
 // desktop's own UI scaling (GDK_SCALE, Xft.dpi, ...) does not change them.
 static std::vector<ScreenRect> ListXScreens() {
     std::vector<ScreenRect> screens;
+    XDisplayLock lock;
     Display *display = XGetMainDisplay();
     if (display == NULL) {
         return screens;

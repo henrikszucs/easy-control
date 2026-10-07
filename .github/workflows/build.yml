@@ -164,7 +164,7 @@ jobs:
       - name: Install the X11 libraries and Xvfb
         run: |
           sudo apt-get update
-          sudo apt-get install -y libx11-dev libxtst-dev libxfixes-dev libxrandr-dev libxkbcommon0 xvfb xauth x11-xkb-utils
+          sudo apt-get install -y libx11-dev libxtst-dev libxfixes-dev libxrandr-dev libxkbcommon0 xvfb xauth x11-xkb-utils x11-xserver-utils
       - run: mkdir -p logs && npm ci
       - name: Build
         run: |

@@ -1,6 +1,6 @@
 # Plan: fixes from the third library review
 
-Status: phase 1 done; phases 2-4 to do. Covers the review of 2026-10-07 (bugs, efficiency, simplification) and one addition asked for
+Status: phases 1 and 2 done; phases 3 and 4 to do. Covers the review of 2026-10-07 (bugs, efficiency, simplification) and one addition asked for
 with it: `Mouse.moveByX(dx)` / `Mouse.moveByY(dy)`. Target release: 0.13.0 (new API, no breaking change except
 the `SetLayout` ones in Decisions 4, gamepad indices that are not integers (item 8) and the uniform argument error
 messages (14)).
@@ -30,6 +30,30 @@ into `platform.h` (14, Linux part) and the `getIconId` docs (10, Linux part)).
   'middle', 'right', 'back' or 'forward'". The gamepad's range messages and `setState`'s `buttons[i]` ones stay.
 - Not verified: the by-hand checks of 1 and 10 (lock screen, an elevated foreground window), Wayland's
   `PointerMoveBy` change (no runner), macOS (CI builds it at the next push).
+
+2026-10-07, phase 2 done (5's Linux part, 3, 4, 9, 12).
+
+- Linux x64 X11 in Docker under Xvfb: build without warnings in our sources, `npm test` 73 pass (the new X11
+  tests: Caps Lock with the US and Hungarian layouts and borrowed `éÉ`; the second of `us,hu` active typing `ő` from
+  its own key; a layout without a third level; running out of spare keys; two workers typing borrowed characters
+  at once while a third times `moveBy`/`getX` under 20 ms; four workers reading the pointer, its icon, the layout
+  and the screens with nothing on stderr), `test:types`, `test:native` (the new `scroll_math_test.cpp`). Against
+  the phase 1 code, the Caps Lock, spare-key and two-worker tests fail, as they should.
+- Windows x64: build without warnings, `npm test` 68 pass (the X11 tests skip), `test:native`.
+- Found by the spare-key test, and there before (the phase 1 code lost five of the first six): of several keys
+  borrowed in one call, some reached the test window as no symbol - its Xlib refreshes the keymap lazily, and
+  borrowings between presses raced with that. Every key a call needs is now borrowed (one `XSync`) before the
+  first press; 19 of 19 arrive, in one call or many. `XkbGetKeySyms` of a borrowed key failed (BadAlloc for a key
+  that had no symbols): the map is read back with `XkbGetUpdatedMap(XkbKeySymsMask)`. The X server gives a
+  `{lower, upper}` key the ALPHABETIC type itself, so no `XkbChangeTypesOfKey` is needed (checked with a probe:
+  type index 2, mask Shift+Lock).
+- 12, measured in Docker (Xvfb, US layout), before / after: `type()` of 2000 characters 3.4 / 3.4 ms (sending the
+  keys dominates), `type("a")` 0.07 / 0.12 ms, `type("A")` 0.07 / 0.13 ms. Under the 2x of Decisions 12: the map is
+  made per call, not kept between calls.
+- Xvfb has 19 spare keycodes (US layout); the README says "about 20".
+- CI installs `x11-xserver-utils` for `xmodmap`, which the spare-key test counts the spare keys with.
+- Not verified: Wayland (the Caps Lock note in the README, `type()` and the wheel through XWayland and uinput: no
+  runner; the wheel arithmetic is, by `test:native`).
 
 2026-10-07: the plan was checked against the code (no change made to the code). Every line reference and every
 claim about today's behaviour held; corrected from that check: the exit hook (1), the Wayland `PointerMoveBy` change
