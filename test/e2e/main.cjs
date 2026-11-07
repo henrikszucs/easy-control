@@ -831,7 +831,12 @@ test("a virtual gamepad shows up in navigator.getGamepads with every button and 
     try {
         const index = await findPad(before, gamepad);
         const pad = await readPad(index);
-        assert(pad["mapping"] === "standard", "mapping is \"" + pad["mapping"] + "\", not the standard layout (" + pad["id"] + ")");
+        // macOS: a generic HID gamepad, for which a browser knows no mapping. In
+        // the same order, but the analog triggers are axes 4 and 5, and a
+        // button's value is 0 or 1. Not seen working: it takes an entitlement.
+        const isMac = os.platform() === "darwin";
+        const expectedMapping = isMac ? "" : "standard";
+        assert(pad["mapping"] === expectedMapping, "mapping is \"" + pad["mapping"] + "\", not \"" + expectedMapping + "\" (" + pad["id"] + ")");
 
         // buttons 6 and 7 are the triggers, driven by axes 4 and 5 below
         for (let btn = 0; btn < 17; btn++) {
@@ -863,7 +868,9 @@ test("a virtual gamepad shows up in navigator.getGamepads with every button and 
                 gamepad.setAxis(axis, value);
                 const expected = (value + 1) / 2;
                 await waitForPad(index, "trigger axis " + axis + " at " + value, function(p) {
-                    return Math.abs(p.buttons[btn].value - expected) <= 0.1;
+                    return isMac
+                        ? Math.abs(p.axes[axis] - value) <= 0.1 && p.buttons[btn].pressed === (value >= 0)
+                        : Math.abs(p.buttons[btn].value - expected) <= 0.1;
                 });
             }
         }
@@ -871,12 +878,14 @@ test("a virtual gamepad shows up in navigator.getGamepads with every button and 
         // setState: buttons, an analog trigger and axes in one call
         gamepad.setState({ "buttons": [true, false, true, false, false, false, { "pressed": true, "value": 0.5 }], "axes": [0.5, -0.5] });
         await waitForPad(index, "setState's buttons, trigger and axes", function(p) {
+            const isTriggerRight = isMac ? p.buttons[6].pressed && Math.abs(p.axes[4]) <= 0.1 : Math.abs(p.buttons[6].value - 0.5) <= 0.1;
             return p.buttons[0].pressed && !p.buttons[1].pressed && p.buttons[2].pressed &&
-                Math.abs(p.buttons[6].value - 0.5) <= 0.1 && Math.abs(p.axes[0] - 0.5) <= 0.1 && Math.abs(p.axes[1] + 0.5) <= 0.1;
+                isTriggerRight && Math.abs(p.axes[0] - 0.5) <= 0.1 && Math.abs(p.axes[1] + 0.5) <= 0.1;
         });
         gamepad.setState({ "buttons": [false, false, false, false, false, false, 0], "axes": [0, 0] });
         await waitForPad(index, "setState's release", function(p) {
-            return !p.buttons[0].pressed && !p.buttons[2].pressed && p.buttons[6].value <= 0.1 && Math.abs(p.axes[0]) <= 0.1;
+            const isTriggerReleased = isMac ? !p.buttons[6].pressed && p.axes[4] <= -0.9 : p.buttons[6].value <= 0.1;
+            return !p.buttons[0].pressed && !p.buttons[2].pressed && isTriggerReleased && Math.abs(p.axes[0]) <= 0.1;
         });
 
         // rumble: Chromium plays it on the pad as a game would

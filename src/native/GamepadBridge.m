@@ -4,8 +4,8 @@
 
 @implementation GamepadBridge
 
-+ (int)createGamepad:(NSMutableString*)error {
-    return (int)[SwiftCode createGamepad:error];
++ (int)createGamepad {
+    return (int)[SwiftCode createGamepad];
 }
 
 + (BOOL)destroyGamepad:(int)gamepadId {
@@ -22,6 +22,10 @@
 
 + (BOOL)setAxis:(int)gamepadId axis:(int)axisId value:(int)value {
     return [SwiftCode setAxis:gamepadId axis:axisId value:value];
+}
+
++ (BOOL)setTrigger:(int)gamepadId button:(int)buttonId value:(int)value pressed:(BOOL)isPressed {
+    return [SwiftCode setTrigger:gamepadId button:buttonId value:value pressed:isPressed];
 }
 
 + (BOOL)beginUpdate:(int)gamepadId {

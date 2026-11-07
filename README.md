@@ -195,9 +195,12 @@ On Windows the virtual gamepad uses easy-control's own driver, installed once pe
 driver" below). Without it Gamepad.create() throws an Error with code "EASYCONTROL_DRIVER_MISSING".
 
 --------------------
-On macOS the virtual gamepad needs macOS 26 and an app signed with the
+On macOS the virtual gamepad needs macOS 15 and an app signed with the
 com.apple.developer.hid.virtual.device entitlement (CoreHID HIDVirtualDevice), so it does not work from a plain
-`node` process. It appears as a generic HID gamepad ("easy-control Virtual Gamepad"), not as an Xbox controller.
+`node` process. It appears as a generic HID gamepad ("easy-control Virtual Gamepad"), not as an Xbox controller: in
+a browser its mapping is "", the analog triggers are axes[4] and axes[5], and a trigger's button value is 0 or 1,
+pressed from halfway. create() resolves once the system has taken the device, which is all it tells. A report the
+system refuses makes the next call throw "Failed to update gamepad state"; that call's report still goes.
 
 --------------------
 On Linux run few configuration to enable UInput (the gamepad needs it, and on Wayland the mouse and keyboard too)
@@ -468,7 +471,7 @@ What the operating systems do not let a program do, or do only in part.
 - Mouse positions keep their fractions of a point. A position read within 100 ms of a move is that move's target,
   so a hand on the mouse goes unseen for that long; another process reading it sees the whole point until the move lands.
 - Gamepad rumble is not reported (the CoreHID gamepad has no rumble that games use).
-- The virtual gamepad needs macOS 26 and an app signed with the `com.apple.developer.hid.virtual.device` entitlement.
+- The virtual gamepad needs macOS 15 and an app signed with the `com.apple.developer.hid.virtual.device` entitlement.
 
 ### Linux
 - X11 coordinates are pixels; there is no logical (scaled) coordinate space.
@@ -484,6 +487,7 @@ npm run test:types    # the TypeScript definitions against test/types/ (tsc)
 npm run test:native   # C++ tests of code without system calls, test/native/ (the Windows screen layout)
 npm run test:e2e      # end-to-end tests in an Electron window, test/e2e/
 npm run test:driver   # Windows: uninstalls and reinstalls the gamepad driver, test/driver/
+npm run test:gamepad-stub   # macOS: the gamepad against a stand-in for CoreHID, test/gamepad-stub/
 ```
 
 On macOS, `test/unit/keyboard.test.js` presses the mute key and checks the system's setting; as that changes a setting
@@ -495,6 +499,10 @@ that need AltGr; as it types for real, it runs only with `EASYCONTROL_TYPING_TES
 uinput and read-write access to the gamepad's event device, so it runs only with `EASYCONTROL_RUMBLE_TEST=1` (CI
 sets both up).
 CI (`.github/workflows/build.yml`) builds every target and runs these on Windows, macOS and Linux.
+
+`npm run test:gamepad-stub` builds a copy of the sources with a stand-in for CoreHID, as a real virtual gamepad takes
+an entitlement, runs the gamepad tests against it and checks what it is sent, to the byte. It cannot show a real device
+or a browser behaving as it should.
 
 `npm test` checks the loaders, every function's results and argument checks, and the gamepad lifecycle. It moves the
 pointer and puts it back, but never clicks, scrolls or presses keys.

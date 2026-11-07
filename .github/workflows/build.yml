@@ -134,7 +134,7 @@ jobs:
       - name: Test
         run: |
           set -o pipefail
-          { npm test && npm run test:types && npm run test:native; } 2>&1 | tee logs/test.log
+          { npm test && npm run test:types && npm run test:native && npm run test:gamepad-stub; } 2>&1 | tee logs/test.log
       - name: Report the failure
         if: failure()
         run: node .github/scripts/annotate.js "macos failed" logs/*.log

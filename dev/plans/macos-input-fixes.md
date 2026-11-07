@@ -1,6 +1,6 @@
 # Plan: fixes from testing on a Mac
 
-Status: phases 1 and 2 done, on the Mac; phases 3 and 4 not started. Reviewed on 2026-11-06 (`/review-plan`, all four
+Status: phases 1 to 3 done, phase 3 against the stand-in only; phase 4 not started. Reviewed on 2026-11-06 (`/review-plan`, all four
 sections). Covers the bugs found on 2026-11-05 by running the library on a real Mac for the first time
 (MacBook M1, one display, macOS 27.2, Xcode 27.2, Hungarian layout). Target release: 0.14.0.
 
@@ -72,6 +72,20 @@ Filled in as phases are done: what was verified where, what could not be verifie
 - Two mute presses gave a focused window no key events; a control key gave it its 2.
 - `npm test` 65 pass, 25 skipped (the volume test without its variable), `test:e2e` 20 pass, 1 skipped, `test:native`,
   `test:types`. No build warnings in `keyboard.cpp`. The x64 build is left to CI.
+
+2026-11-07, phase 3 done (0, 3, 4, 5), on the same Mac, none of it on a real device:
+
+- `npm run test:gamepad-stub`: `gamepad.test.js` 14 pass, 5 skipped (they do not apply); `reports.test.js` 14 pass, 10
+  whole runs of it in a row. Written first and run on the code as it was: the trigger's bit, the button and axis
+  disagreeing, `setState`'s explicit pressed, and a failed report all failed, as they should.
+- Run them apart: the processes each number their pads from 1, so two sharing a log read each other's lines.
+- A run taking 601 s, past its test's 60 s timeout, was the Mac: idle sleep from 09:13:00 to a dark wake at 09:23:03. Not
+  a deadlock in the new lock: the same test took 1.6 s 18 times over. Keep a Mac awake for these (`caffeinate`).
+- The real build: no warnings in our sources, and the `catch`'s warning is gone. `create()` rejects as before, now saying
+  macOS 15. `npm test` 65 pass, 25 skipped; `test:e2e` 20 pass, 1 skipped; `test:native`, `test:types`, the volume test.
+  The x64 Swift typechecks here; its build is left to CI, which is also the first sight of CI's SDK.
+- Never run: the e2e gamepad test's new macOS expectations (`mapping` `""`, `axes[4]`, the trigger's bit), which rest on
+  reading Chromium; a real device's reports; macOS 15.
 
 ## Items
 

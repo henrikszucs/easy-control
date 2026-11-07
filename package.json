@@ -40,6 +40,7 @@
         "test": "node --test \"test/unit/*.test.js\"",
         "test:types": "tsc -p test/types",
         "test:native": "node test/native/run.js",
+        "test:gamepad-stub": "node test/gamepad-stub/run.js",
         "test:e2e": "node test/e2e/run.cjs",
         "test:driver": "node --test test/driver/driver.test.js",
         "clean": "node index.js --clean"

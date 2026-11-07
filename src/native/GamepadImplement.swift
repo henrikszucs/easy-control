@@ -2,8 +2,7 @@ import Foundation
 import CoreHID
 
 // what createGamepad returns when it makes no gamepad
-let CREATE_UNAVAILABLE = -1         // no HIDVirtualDevice: before macOS 26, or without the entitlement
-let CREATE_ACTIVATION_FAILED = -2   // the device was made, its activation failed
+let CREATE_UNAVAILABLE = -1         // no HIDVirtualDevice: before macOS 15, or without the entitlement
 let CREATE_ACTIVATION_TIMEOUT = -3  // the activation did not finish in time
 
 @objc
@@ -16,11 +15,12 @@ public class SwiftCode: NSObject {
     // how long create() waits for a pad's activation
     private static let activationTimeout: Double = 5
 
-    // Makes a gamepad and waits until it is active, so a pad create() hands
-    // out works. The id, or CREATE_*, with what failed in `error`. Called off
-    // the JS thread; the wait is outside the lock, so a slow activation does
-    // not hold up the other pads.
-    @objc public static func createGamepad(_ error: NSMutableString) -> Int {
+    // Makes a gamepad and waits for its activation to return, so create()
+    // resolves with the device taken by the system; the system says no more than
+    // that, as activate(delegate:) neither throws nor returns anything. The id, or
+    // CREATE_*. Called off the JS thread; the wait is outside the lock, so a
+    // slow activation does not hold up the other pads.
+    @objc public static func createGamepad() -> Int {
         lock.lock()
         let gamepadId = nextId
         nextId += 1
@@ -31,14 +31,7 @@ public class SwiftCode: NSObject {
         if !device.isInitialized() {
             return CREATE_UNAVAILABLE
         }
-        switch device.waitUntilActive(timeout: activationTimeout) {
-        case .active:
-            break
-        case .failed(let reason):
-            device.destroy()
-            error.setString(reason)
-            return CREATE_ACTIVATION_FAILED
-        case .timedOut:
+        if !device.waitUntilActive(timeout: activationTimeout) {
             // an activation finishing later leaves no device behind
             device.destroy()
             return CREATE_ACTIVATION_TIMEOUT
@@ -80,6 +73,10 @@ public class SwiftCode: NSObject {
         return withDevice(gamepadId) { $0.setAxis(axisIndex: axisId, value: Int16(clamping: value)) }
     }
 
+    @objc public static func setTrigger(_ gamepadId: Int, button buttonId: Int, value: Int, pressed isPressed: Bool) -> Bool {
+        return withDevice(gamepadId) { $0.setTrigger(buttonIndex: buttonId, value: Int16(clamping: value), isPressed: isPressed) }
+    }
+
     // between these, changes are kept and go as one report (setState)
     @objc public static func beginUpdate(_ gamepadId: Int) -> Bool {
         return withDevice(gamepadId) { device in
@@ -93,11 +90,24 @@ public class SwiftCode: NSObject {
     }
 }
 
-// how a pad's activation ended, as createGamepad waited for it
-enum Activation {
-    case active
-    case failed(String)
-    case timedOut
+// Whether the last report reached the system: the task sending them writes it,
+// and the thread making them reads it. A failure does not stay: the next report
+// that gets through clears it.
+final class ReportStatus {
+    private let lock = NSLock()
+    private var isFailed = false
+
+    func set(isFailed: Bool) {
+        lock.lock()
+        defer { lock.unlock() }
+        self.isFailed = isFailed
+    }
+
+    func hasFailed() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return isFailed
+    }
 }
 
 // The gamepad's state, sent whole in every report
@@ -112,9 +122,9 @@ public struct GamepadState {
 }
 
 // Delegate to handle HID virtual device callbacks. CoreHID's virtual devices
-// are macOS 26 API; the addon itself loads from macOS 10.15 on, where
+// are macOS 15 API; the addon itself loads from macOS 10.15 on, where
 // create() just reports it cannot make a gamepad.
-@available(macOS 26.0, *)
+@available(macOS 15.0, *)
 final class GamepadDelegate: HIDVirtualDeviceDelegate {
     func hidVirtualDevice(_ device: HIDVirtualDevice, receivedSetReportRequestOfType type: HIDReportType, id: HIDReportID?, data: Data) throws {
         // Handle set report requests if needed
@@ -131,7 +141,7 @@ final class GamepadDelegate: HIDVirtualDeviceDelegate {
     static let buttonCount = 17
 
     // a HIDVirtualDevice and its GamepadDelegate, kept untyped as both are
-    // macOS 26 types
+    // macOS 15 types
     private var device: Any?
     private var currentState: GamepadState
     private var delegate: Any?
@@ -142,17 +152,18 @@ final class GamepadDelegate: HIDVirtualDeviceDelegate {
     // made (not yet active); written before the device is shared, and after
     // under SwiftCode's lock only
     private var initialized: Bool = false
-    // the activation's end: the Task sets activationError (nil when active),
-    // then signals; read after the wait only
+    // signalled by the Task when the activation has returned
     private let activation = DispatchSemaphore(value: 0)
-    private var activationError: String?
+    private let reportStatus = ReportStatus()
     // while true, changes are kept and not sent (beginUpdate/endUpdate)
     private var isUpdating: Bool = false
 
     // A generic HID gamepad. The order of the usages is the W3C Standard
-    // Gamepad order, which is what browsers and SDL fall back to for a gamepad
-    // they have no mapping for: buttons 1-17, then X, Y, Z, Rx for the sticks
-    // (left X, left Y, right X, right Y) and Ry, Rz for the triggers.
+    // Gamepad order: buttons 1-17, then X, Y, Z, Rx for the sticks (left X,
+    // left Y, right X, right Y) and Ry, Rz for the triggers. A browser knows no
+    // mapping for it, so it reports mapping "" and these in this order: the
+    // analog triggers are axes[4] and axes[5], and a button's value is 0 or 1
+    // from its own bit, which is why the trigger's bit follows its analog value.
     private static let reportDescriptor: [UInt8] = [
         0x05, 0x01,        // Usage Page (Generic Desktop)
         0x09, 0x05,        // Usage (Game Pad)
@@ -202,7 +213,7 @@ final class GamepadDelegate: HIDVirtualDeviceDelegate {
         super.init()
 
         // Check if macOS version is supported and create device
-        if #available(macOS 26.0, *) {
+        if #available(macOS 15.0, *) {
             // Not an Xbox controller's IDs: the report layout above is not an
             // Xbox controller's, and drivers that know those IDs would read it
             // wrong. 0x1209 is pid.codes, the vendor ID for open projects;
@@ -231,20 +242,20 @@ final class GamepadDelegate: HIDVirtualDeviceDelegate {
             let stream = AsyncStream<Data> { continuation = $0 }
             self.reports = continuation
 
-            // activate (telling waitUntilActive how it went), then send the
-            // reports one after another
+            // activate (telling waitUntilActive), then send the reports one
+            // after another
             let activation = self.activation
-            pumpTask = Task { [weak self] in
-                do {
-                    try await hidDevice.activate(delegate: delegate)
-                } catch {
-                    self?.activationError = error.localizedDescription.isEmpty ? String(describing: error) : error.localizedDescription
-                    activation.signal()
-                    return
-                }
+            let reportStatus = self.reportStatus
+            pumpTask = Task {
+                await hidDevice.activate(delegate: delegate)
                 activation.signal()
                 for await report in stream {
-                    try? await hidDevice.dispatchInputReport(data: report, timestamp: SuspendingClock.now)
+                    do {
+                        try await hidDevice.dispatchInputReport(data: report, timestamp: SuspendingClock.now)
+                        reportStatus.set(isFailed: false)
+                    } catch {
+                        reportStatus.set(isFailed: true)
+                    }
                 }
             }
         } else {
@@ -256,15 +267,10 @@ final class GamepadDelegate: HIDVirtualDeviceDelegate {
         return initialized
     }
 
-    // waits for the activation started by init, at most `timeout` seconds
-    func waitUntilActive(timeout: Double) -> Activation {
-        if activation.wait(timeout: .now() + timeout) == .timedOut {
-            return .timedOut
-        }
-        if let error = activationError {
-            return .failed(error)
-        }
-        return .active
+    // waits for the activation started by init, at most `timeout` seconds;
+    // false when it has not returned by then
+    func waitUntilActive(timeout: Double) -> Bool {
+        return activation.wait(timeout: .now() + timeout) == .success
     }
 
     @objc public func destroy() {
@@ -277,22 +283,49 @@ final class GamepadDelegate: HIDVirtualDeviceDelegate {
         initialized = false
     }
 
-    // buttons 6 and 7 are the triggers: they also pull the analog trigger
-    @objc public func setButton(buttonIndex: Int, isDown: Bool) -> Bool {
-        guard buttonIndex >= 0 && buttonIndex < Self.buttonCount else {
-            return false
-        }
+    private func setBit(buttonIndex: Int, isDown: Bool) {
         let mask: UInt32 = 1 << UInt32(buttonIndex)
         if isDown {
             currentState.buttons |= mask
         } else {
             currentState.buttons &= ~mask
         }
+    }
+
+    // from -1 released to 1 pulled, as 0-255
+    private static func triggerAmount(_ value: Int16) -> UInt8 {
+        return UInt8(max(0, min(255, (Int(value) + 32768) / 256)))
+    }
+
+    // a trigger's analog value and bit, together: button 6 is the left one, 7 the right
+    private func applyTrigger(buttonIndex: Int, amount: UInt8, isPressed: Bool) {
         if buttonIndex == 6 {
-            currentState.leftTrigger = isDown ? 255 : 0
-        } else if buttonIndex == 7 {
-            currentState.rightTrigger = isDown ? 255 : 0
+            currentState.leftTrigger = amount
+        } else {
+            currentState.rightTrigger = amount
         }
+        setBit(buttonIndex: buttonIndex, isDown: isPressed)
+    }
+
+    // buttons 6 and 7 are the triggers: they pull them fully
+    @objc public func setButton(buttonIndex: Int, isDown: Bool) -> Bool {
+        guard buttonIndex >= 0 && buttonIndex < Self.buttonCount else {
+            return false
+        }
+        if buttonIndex == 6 || buttonIndex == 7 {
+            applyTrigger(buttonIndex: buttonIndex, amount: isDown ? 255 : 0, isPressed: isDown)
+        } else {
+            setBit(buttonIndex: buttonIndex, isDown: isDown)
+        }
+        return sendReport()
+    }
+
+    // a trigger with its pressed state given, as a browser's GamepadButton has it
+    @objc public func setTrigger(buttonIndex: Int, value: Int16, isPressed: Bool) -> Bool {
+        guard buttonIndex == 6 || buttonIndex == 7 else {
+            return false
+        }
+        applyTrigger(buttonIndex: buttonIndex, amount: Self.triggerAmount(value), isPressed: isPressed)
         return sendReport()
     }
 
@@ -306,10 +339,10 @@ final class GamepadDelegate: HIDVirtualDeviceDelegate {
             currentState.thumbRX = value
         case 3:
             currentState.thumbRY = value
-        case 4:
-            currentState.leftTrigger = UInt8(max(0, min(255, (Int(value) + 32768) / 256)))
-        case 5:
-            currentState.rightTrigger = UInt8(max(0, min(255, (Int(value) + 32768) / 256)))
+        case 4, 5:
+            // pressed from halfway, the 0.5 a number in setState's buttons is pressed from
+            let amount = Self.triggerAmount(value)
+            applyTrigger(buttonIndex: axisIndex + 2, amount: amount, isPressed: amount >= 128)
         default:
             return false
         }
@@ -349,7 +382,8 @@ final class GamepadDelegate: HIDVirtualDeviceDelegate {
         report.append(currentState.leftTrigger)
         report.append(currentState.rightTrigger)
 
+        // this report goes even after a failure: it is how the pad recovers
         reports.yield(report)
-        return true
+        return !reportStatus.hasFailed()
     }
 }
