@@ -1,6 +1,6 @@
 # Plan: fixes from testing on a Mac
 
-Status: phases 1 to 3 done, phase 3 against the stand-in only; phase 4 not started. Reviewed on 2026-11-06 (`/review-plan`, all four
+Status: phases 1 to 3 done, phase 3 against the stand-in only; phase 4 coded, waiting on CI. Reviewed on 2026-11-06 (`/review-plan`, all four
 sections). Covers the bugs found on 2026-11-05 by running the library on a real Mac for the first time
 (MacBook M1, one display, macOS 27.2, Xcode 27.2, Hungarian layout). Target release: 0.14.0.
 
@@ -86,6 +86,13 @@ Filled in as phases are done: what was verified where, what could not be verifie
   The x64 Swift typechecks here; its build is left to CI, which is also the first sight of CI's SDK.
 - Never run: the e2e gamepad test's new macOS expectations (`mapping` `""`, `axes[4]`, the trigger's bit), which rest on
   reading Chromium; a real device's reports; macOS 15.
+
+2026-11-07, phase 4 coded: `npm run test:mac`, the one attempt at Accessibility on the hosted runner, 0.14.0 and its
+changelog.
+
+- `npm run test:mac` on the same Mac: unit 66 pass, 24 skipped, with the volume test; e2e 20 pass, 1 skipped; the gamepad
+  against the stand-in 14 and 14 pass; native passes. Its first run failed one test, "dist loaders carry the version
+  banner", until `npm run build:js` gave the loaders 0.14.0's: a local `dist/`, which CI rebuilds.
 
 ## Items
 

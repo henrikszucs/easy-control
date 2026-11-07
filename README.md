@@ -488,6 +488,7 @@ npm run test:native   # C++ tests of code without system calls, test/native/ (th
 npm run test:e2e      # end-to-end tests in an Electron window, test/e2e/
 npm run test:driver   # Windows: uninstalls and reinstalls the gamepad driver, test/driver/
 npm run test:gamepad-stub   # macOS: the gamepad against a stand-in for CoreHID, test/gamepad-stub/
+npm run test:mac      # macOS: every suite that needs real input, with the volume test; before each release
 ```
 
 On macOS, `test/unit/keyboard.test.js` presses the mute key and checks the system's setting; as that changes a setting

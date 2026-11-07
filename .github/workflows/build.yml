@@ -131,10 +131,28 @@ jobs:
         run: |
           set -o pipefail
           { npm run build -- --arch x64 && npm run build; } 2>&1 | tee logs/build.log
+      # One attempt (dev/plans/done/macos-input-fixes.md): the hosted runner has
+      # no Accessibility, so the pointer and keyboard tests skip here. This grants
+      # it through the system's permission database, which SIP guards on a normal
+      # Mac. Keep it if the next step says it took; drop it if it never does.
+      - name: Try to let the tests send input (Accessibility)
+        continue-on-error: true
+        run: |
+          db="/Library/Application Support/com.apple.TCC/TCC.db"
+          for client in "$(node -p 'require("fs").realpathSync(process.execPath)')" /bin/bash; do
+            sudo sqlite3 "$db" "INSERT OR REPLACE INTO access (service, client, client_type, auth_value, auth_reason, auth_version, flags, last_modified) VALUES ('kTCCServiceAccessibility', '$client', 1, 2, 4, 1, 0, CAST(strftime('%s','now') AS INTEGER));"
+          done
+      - name: Say whether the tests can send input
+        run: |
+          node -e "const p = require('./dist/easy-control.cjs').Platform; console.log('::notice title=Accessibility on the runner::hasInputAccess ' + p.hasInputAccess() + ', getInputBlock ' + p.getInputBlock())"
       - name: Test
         run: |
           set -o pipefail
           { npm test && npm run test:types && npm run test:native && npm run test:gamepad-stub; } 2>&1 | tee logs/test.log
+      - name: Say what ran
+        if: always()
+        run: |
+          echo "::notice title=npm test on macOS::$(grep -m4 -E '^ℹ (tests|pass|fail|skipped)' logs/test.log | tr -d 'ℹ' | tr '\n' ' ')"
       - name: Report the failure
         if: failure()
         run: node .github/scripts/annotate.js "macos failed" logs/*.log

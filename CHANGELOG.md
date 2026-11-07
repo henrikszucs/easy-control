@@ -1,5 +1,46 @@
 # Changelog
 
+## 0.14.0
+
+Fixes from testing on a real Mac for the first time (MacBook M1, macOS 27.2). The macOS virtual gamepad's changes are
+tested against a stand-in for CoreHID only: no machine at hand had the entitlement a real one takes.
+
+### Fixed
+
+- macOS: `Mouse.setPosition` dropped fractions of a point, so on a Retina screen half the physical pixels could not
+  be reached, and a position read after a trackpad move could not be set back. `moveBy` and clicks keep them too.
+- macOS: `Mouse.getIcon()`/`getIconId()` reported a picture with nothing to see (CSS `cursor: none`) as a cursor;
+  it is hidden now, 0x0 and id 0.
+- macOS: `Mouse.buttonDown`/`buttonUp` clicked at the top left of the screen, on the Apple menu, when the pointer's
+  position could not be read; they throw now.
+- macOS: the volume keys (`AudioVolumeUp`, `AudioVolumeDown`, `AudioVolumeMute`) reached the focused window as keys
+  and left the volume as it was. They work the system's volume now, as a keyboard's do.
+- macOS gamepad: a trigger's button and axis disagreed (`setAxis(4, 1)` left button 6 released, `buttonDown(6)`
+  then `setAxis(4, -1)` left it pressed). The bit follows the analog value, pressed from halfway, or as `setState`
+  gives it.
+- macOS gamepad: reports the system refused were dropped without a word; the next call throws now.
+
+### Behaviour changes
+
+- macOS: a position read within 100 ms of a move is that move's target, so a hand on the mouse goes unseen for that
+  long; off every screen the pointer ends on the nearest screen's last whole point (`1439`, as `moveBy` did, not the
+  system's `1439.984`).
+- macOS: a pointer hidden other than by its picture (`[NSCursor hide]`, while typing) is not reported as hidden: the
+  system's answer stays "hidden" while the pointer can be seen moving.
+- macOS: the volume keys no longer reach windows as key events.
+- macOS gamepad: needs macOS 15, not 26, as CoreHID has had `HIDVirtualDevice` since. `create()` resolving means the
+  system took the device, which is all it tells: the activation cannot report a failure, so that error is gone
+  (0.13.0 said otherwise). A report the system refuses makes the next call throw "Failed to update gamepad state";
+  that call's report still goes, so the pad recovers. A browser shows the pad with mapping `""`, its analog triggers
+  in `axes[4]` and `axes[5]`.
+
+### Other
+
+- `npm run test:gamepad-stub`: the macOS gamepad against a stand-in for CoreHID, to the byte; CI runs it.
+- `npm run test:mac`: every suite that needs real input on a Mac, before each release.
+- `setPosition` and `moveBy` cost about 40-50 µs more on macOS (about 113 to 160 µs), for clamping to the screens.
+- No gamepad driver change.
+
 ## 0.13.0
 
 Fixes from the third review of the library, and movement along one axis.
