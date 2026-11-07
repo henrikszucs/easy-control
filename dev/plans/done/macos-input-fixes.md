@@ -1,8 +1,6 @@
 # Plan: fixes from testing on a Mac
 
-Status: done, as 0.14.0 - phase 3 against a stand-in for CoreHID only, as no machine at hand had the entitlement.
-Moved here with CI's run of `cf18553` (the first of the branch: the x64 build, CI's SDK, the Accessibility attempt)
-not yet finished; what it shows goes under Progress. Reviewed on 2026-11-06 (`/review-plan`, all four
+Status: done, as 0.14.0 - phase 3 against a stand-in for CoreHID only, as no machine at hand had the entitlement. Reviewed on 2026-11-06 (`/review-plan`, all four
 sections). Covers the bugs found on 2026-11-05 by running the library on a real Mac for the first time
 (MacBook M1, one display, macOS 27.2, Xcode 27.2, Hungarian layout). Target release: 0.14.0.
 
@@ -95,6 +93,15 @@ changelog.
 - `npm run test:mac` on the same Mac: unit 66 pass, 24 skipped, with the volume test; e2e 20 pass, 1 skipped; the gamepad
   against the stand-in 14 and 14 pass; native passes. Its first run failed one test, "dist loaders carry the version
   banner", until `npm run build:js` gave the loaders 0.14.0's: a local `dist/`, which CI rebuilds.
+
+2026-11-07, CI's run of `cf18553`, the branch's first: every job passed (Windows x64 and ARM64, macOS, the three
+Linux ones; `update-dist` skipped, as on any push).
+
+- macOS: `hasInputAccess true, getInputBlock null` after the Accessibility step, and `npm test` 65 pass, 25 skipped, as
+  on the Mac: the pointer tests ran there, the fraction, clamp and stress tests among them. Not known: whether the step
+  granted it or the runner image now has it anyway; keep the step until a run says otherwise.
+- The Swift part built against CI's SDK with `activate` not awaited in a `try`, and the x64 cross build passed.
+- `test:gamepad-stub` ran in CI.
 
 ## Items
 
