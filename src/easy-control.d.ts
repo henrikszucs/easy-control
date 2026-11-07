@@ -84,8 +84,9 @@ export interface Mouse {
     /** The pointer's picture; empty while it is hidden. */
     getIcon(): MouseIcon;
     /**
-     * A number that changes when the pointer's shape does; 0 while it is hidden on Windows and macOS
-     * (Linux cannot tell: XFixes reports no hidden state). Cheap on Windows and Linux (poll it, call
+     * A number that changes when the pointer's shape does; 0 while it is hidden on Windows and macOS,
+     * on macOS when its picture has nothing to see (CSS `cursor: none`); a pointer hidden any other way
+     * keeps its picture there (Linux cannot tell: XFixes reports no hidden state). Cheap on Windows and Linux (poll it, call
      * `getIcon` when it changes); a hash of the picture on macOS.
      */
     getIconId(): number;

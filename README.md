@@ -95,12 +95,15 @@ The same format on every platform:
     "xOffset": 0,       // the hot spot (the pixel that points), in physical pixels
     "yOffset": 0
 }
-While the pointer is hidden: width and height 0, data empty. Windows draws the inverting pixels of black-and-
+While the pointer is hidden: width and height 0, data empty. On macOS that means a picture with nothing to see
+(CSS cursor: none); a pointer hidden any other way ([NSCursor hide], or while typing) keeps its picture, as the
+system's own answer stays "hidden" while the pointer can be seen moving. Windows draws the inverting pixels of black-and-
 white cursors (the text I-beam) by the screen under them; here they are mid-grey.
 */
 
 const iconId = Mouse.getIconId();   // a number that changes when the pointer shape changes, 0 while it is hidden
-                                    // on Windows and macOS (Linux cannot tell: XFixes reports no hidden state).
+                                    // on Windows and macOS, as getIcon says (Linux cannot tell: XFixes reports no
+                                    // hidden state).
                                     // Cheap on Windows and Linux: poll it and call getIcon only when it changes.
                                     // On macOS it is a hash of the picture, about as costly as getIcon.
 
@@ -460,6 +463,8 @@ What the operating systems do not let a program do, or do only in part.
   without an error.
 - **Secure keyboard entry**: while a password field (or an app, like Terminal with the option on) has it, keys are
   dropped; `Platform.getInputBlock()` says `"secure-input"`.
+- Mouse positions keep their fractions of a point. A position read within 100 ms of a move is that move's target,
+  so a hand on the mouse goes unseen for that long; another process reading it sees the whole point until the move lands.
 - Gamepad rumble is not reported (the CoreHID gamepad has no rumble that games use).
 - The virtual gamepad needs macOS 26 and an app signed with the `com.apple.developer.hid.virtual.device` entitlement.
 

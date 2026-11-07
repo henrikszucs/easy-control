@@ -481,6 +481,66 @@ test("scroll takes fractions of a notch, which add up", async function() {
     assert(left.deltaX < 0, "negative x: deltaX " + left.deltaX + " should be negative (left)");
 });
 
+test("macOS: a click does not move the pointer off a fraction", { "skip": os.platform() !== "darwin" && "macOS only" }, async function() {
+    const point = centre(regions.pad);
+    const x = Math.floor(point.x) + 0.3;
+    const y = Math.floor(point.y) + 0.7;
+    let mark = events.length;
+    Mouse.setPosition(x, y);
+    await waitFor(mark, "the move", function(e) {
+        return e["type"] === "mousemove";
+    });
+    mark = events.length;
+    buttonDown("left");
+    buttonUp("left");
+    await waitFor(mark, "the release", function(e) {
+        return e["type"] === "mouseup";
+    });
+    await sleep(150);
+    assertNear(Mouse.getX(), x, 0.01, "x");
+    assertNear(Mouse.getY(), y, 0.01, "y");
+});
+
+test("macOS: a picture with nothing to see counts as hidden, one with a pixel to see does not", { "skip": os.platform() !== "darwin" && "macOS only" }, async function() {
+    const point = centre(regions.pad);
+    const shapeOf = async function(cursor) {
+        await call("document.getElementById(\"pad\").style.cursor = " + JSON.stringify(cursor));
+        // the shape changes once the window has seen a move
+        const mark = events.length;
+        Mouse.setPosition(point.x + 5, point.y + 5);
+        await waitFor(mark, "the move away", function(e) {
+            return e["type"] === "mousemove";
+        });
+        const markBack = events.length;
+        Mouse.setPosition(point.x, point.y);
+        await waitFor(markBack, "the move back", function(e) {
+            return e["type"] === "mousemove";
+        });
+        await sleep(150);
+        return { "id": Mouse.getIconId(), "icon": Mouse.getIcon() };
+    };
+    const onePixel = "url(\"data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='8' height='8'>" +
+        "<rect width='1' height='1' fill='red'/></svg>\") 0 0, auto";
+    try {
+        const before = await shapeOf("default");
+        assert(before.icon.width > 0 && before.id !== 0, "the arrow has a picture and an id");
+
+        const hidden = await shapeOf("none");
+        assert(hidden.icon.width === 0 && hidden.icon.height === 0 && hidden.icon.data.length === 0,
+            "cursor: none gives a " + hidden.icon.width + "x" + hidden.icon.height + " picture of " + hidden.icon.data.length + " bytes");
+        assert(hidden.id === 0, "cursor: none gives id " + hidden.id);
+
+        const pixel = await shapeOf(onePixel);
+        assert(pixel.icon.width > 0 && pixel.id !== 0,
+            "one pixel to see gives a " + pixel.icon.width + "x" + pixel.icon.height + " picture and id " + pixel.id);
+
+        const after = await shapeOf("default");
+        assert(after.id === before.id, "the arrow's id came back as " + after.id + ", it was " + before.id);
+    } finally {
+        await call("document.getElementById(\"pad\").style.cursor = \"\"");
+    }
+});
+
 test("getIcon and getIconId follow the pointer shape", { "skip": isWayland && "Wayland shows only XWayland pointer shapes" }, async function() {
     const arrowPoint = centre(regions.pad);
     const crossPoint = centre(regions.cross);

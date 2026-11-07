@@ -14,8 +14,10 @@
 #include <vector>
 
 #if defined(IS_MACOS)
+    #include "point_clamp.h"
     #include <ApplicationServices/ApplicationServices.h>
     #import <AppKit/AppKit.h>
+    #include <chrono>
 #elif defined(IS_LINUX)
     #include "scroll_math.h"
     #include "uinput.h"
@@ -145,6 +147,38 @@ static void ThrowIfFailed(Napi::Env env, bool isDone, const std::string& error) 
 #endif
 
 
+#if defined(IS_MACOS)
+// A warp moves the pointer at once, but to whole points only; the event posted
+// after it brings the fraction a moment later, and moves still on their way
+// can land after it. So for a moment after a move the pointer is where the move
+// sent it, whatever the system shows. Posted moves were measured landing within
+// 18 ms, on a loaded machine; a hand on the mouse goes unseen for this long.
+// The target is read and written holding an InputStateLock.
+static const std::chrono::milliseconds MOVE_LANDS_WITHIN(100);
+static bool hasLastMove = false;
+static CGPoint lastMoveTarget = CGPointZero;
+static std::chrono::steady_clock::time_point lastMoveTime;
+
+// where the pointer is; false when the system cannot tell
+static bool CurrentPointer(CGPoint& pointer) {
+    InputStateLock lock;
+    if (hasLastMove) {
+        if (std::chrono::steady_clock::now() - lastMoveTime < MOVE_LANDS_WITHIN) {
+            pointer = lastMoveTarget;
+            return true;
+        }
+        hasLastMove = false;
+    }
+    CGEventRef event = CGEventCreate(NULL);
+    if (event == NULL) {
+        return false;
+    }
+    pointer = CGEventGetLocation(event);
+    CFRelease(event);
+    return true;
+}
+#endif
+
 // What converting between the pointer's and the logical coordinates needs,
 // made once per call. On Windows the monitors' layout, which asks every
 // monitor its DPI, so a call that reads the position and moves the pointer
@@ -170,12 +204,10 @@ static bool GetPosition(const ScreenSpace& space, double& x, double& y) {
         return true;
 
     #elif defined(IS_MACOS)
-        CGEventRef event = CGEventCreate(NULL);
-        if (event == NULL) {
+        CGPoint cursor = CGPointZero;
+        if (!CurrentPointer(cursor)) {
             return false;
         }
-        CGPoint cursor = CGEventGetLocation(event);
-        CFRelease(event);
         x = cursor.x;
         y = cursor.y;
         return true;
@@ -210,11 +242,28 @@ static bool GetPosition(const ScreenSpace& space, double& x, double& y) {
 }
 
 #if defined(IS_MACOS)
+// the point itself when on a screen, else the nearest point of the nearest screen
+static CGPoint ClampToDisplays(CGPoint point) {
+    CGDirectDisplayID displays[32];
+    uint32_t count = 0;
+    if (CGGetActiveDisplayList(32, displays, &count) != kCGErrorSuccess) {
+        return point;
+    }
+    PointClamp::Rect screens[32];
+    for (uint32_t i = 0; i < count; i++) {
+        const CGRect bounds = CGDisplayBounds(displays[i]);
+        screens[i] = { bounds.origin.x, bounds.origin.y, bounds.size.width, bounds.size.height };
+    }
+    const PointClamp::Point clamped = PointClamp::Clamp(screens, count, { point.x, point.y });
+    return CGPointMake(clamped.x, clamped.y);
+}
+
 // Posts a move to a point - posted as an event, not only warped, so
 // applications see the move (and a drag while a button is held) - with the
 // movement in its delta fields: applications that have detached the pointer
 // from the mouse (pointer lock, games) read those, not the position.
-static bool PostMove(CGPoint target, int64_t dx, int64_t dy) {
+static bool PostMove(CGPoint requested, int64_t dx, int64_t dy) {
+    const CGPoint target = ClampToDisplays(requested);
     InputStateLock lock;
     CGEventType eventType = kCGEventMouseMoved;
     CGMouseButton mouseButton = kCGMouseButtonLeft;
@@ -244,25 +293,14 @@ static bool PostMove(CGPoint target, int64_t dx, int64_t dy) {
         CGEventSetIntegerValueField(moveEvent, kCGMouseEventClickState, clickCount);
     }
     CGEventSetFlags(moveEvent, ModifierFlags());
+    // in this order: the warp keeps whole points only, so it may not come last
+    CGWarpMouseCursorPosition(target);
+    hasLastMove = true;
+    lastMoveTarget = target;
+    lastMoveTime = std::chrono::steady_clock::now();
     CGEventPost(kCGHIDEventTap, moveEvent);
     CFRelease(moveEvent);
-    // the posted event moves the pointer a moment later; warping it there
-    // as well makes getX/getY right after read the new position
-    CGWarpMouseCursorPosition(target);
     return true;
-}
-
-// the bounding box of all displays, in points
-static CGRect DisplaysBounds() {
-    CGDirectDisplayID displays[32];
-    uint32_t count = 0;
-    CGRect bounds = CGRectNull;
-    if (CGGetActiveDisplayList(32, displays, &count) == kCGErrorSuccess) {
-        for (uint32_t i = 0; i < count; i++) {
-            bounds = CGRectUnion(bounds, CGDisplayBounds(displays[i]));
-        }
-    }
-    return bounds;
 }
 #endif
 
@@ -587,6 +625,18 @@ static bool ReadCursor(CursorPicture& picture) {
         }
         picture.rgba.assign(bitmapData, bitmapData + (size_t)width * height * 4);
         picture.isPremultiplied = true;
+
+        // Nothing to see: how a pointer is hidden by a picture (CSS cursor: none).
+        // CGCursorIsVisible is no help for the other ways: it stays false after
+        // typing, through moves we post, while the pointer can be seen moving;
+        // a remote client going by it would lose its cursor.
+        bool isVisible = false;
+        for (size_t i = 3; i < picture.rgba.size() && !isVisible; i += 4) {
+            isVisible = picture.rgba[i] != 0;
+        }
+        if (!isVisible) {
+            return false;
+        }
         picture.width = width;
         picture.height = height;
         picture.xOffset = (int)std::lround(hotspot.x * scale);
@@ -818,14 +868,7 @@ static void MoveBy(Napi::Env env, double dx, double dy) {
         if (!RequirePosition(env, ScreenSpace(), currentX, currentY)) {
             return;
         }
-        double targetX = currentX + x;
-        double targetY = currentY + y;
-        const CGRect bounds = DisplaysBounds();
-        if (!CGRectIsNull(bounds)) {
-            targetX = std::min(std::max(targetX, (double)CGRectGetMinX(bounds)), (double)CGRectGetMaxX(bounds) - 1);
-            targetY = std::min(std::max(targetY, (double)CGRectGetMinY(bounds)), (double)CGRectGetMaxY(bounds) - 1);
-        }
-        if (!PostMove(CGPointMake(targetX, targetY), x, y)) {
+        if (!PostMove(CGPointMake(currentX + x, currentY + y), x, y)) {
             Napi::Error::New(env, "Failed to create mouse event").ThrowAsJavaScriptException();
         }
 
@@ -910,10 +953,8 @@ static InputError SendButton(const std::string& button, bool isDown) {
     #elif defined(IS_MACOS)
         InputStateLock lock;
         CGPoint cursor = CGPointZero;
-        CGEventRef event = CGEventCreate(NULL);
-        if (event != NULL) {
-            cursor = CGEventGetLocation(event);
-            CFRelease(event);
+        if (!CurrentPointer(cursor)) {
+            return InputError{ "", "Failed to read the pointer position" };
         }
 
         CGEventType eventType = isDown ? kCGEventLeftMouseDown : kCGEventLeftMouseUp;
