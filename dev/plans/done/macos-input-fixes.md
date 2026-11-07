@@ -1,6 +1,8 @@
 # Plan: fixes from testing on a Mac
 
-Status: phases 1 to 3 done, phase 3 against the stand-in only; phase 4 coded, waiting on CI. Reviewed on 2026-11-06 (`/review-plan`, all four
+Status: done, as 0.14.0 - phase 3 against a stand-in for CoreHID only, as no machine at hand had the entitlement.
+Moved here with CI's run of `cf18553` (the first of the branch: the x64 build, CI's SDK, the Accessibility attempt)
+not yet finished; what it shows goes under Progress. Reviewed on 2026-11-06 (`/review-plan`, all four
 sections). Covers the bugs found on 2026-11-05 by running the library on a real Mac for the first time
 (MacBook M1, one display, macOS 27.2, Xcode 27.2, Hungarian layout). Target release: 0.14.0.
 
