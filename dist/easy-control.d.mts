@@ -1,4 +1,4 @@
-/*! easy-control v0.13.0 | LGPL-3.0-only | https://github.com/henrikszucs/easy-control */
+/*! easy-control v0.14.0 | LGPL-3.0-only | https://github.com/henrikszucs/easy-control */
 // Type definitions for easy-control. src/build.js copies them to
 // dist/easy-control.d.cts (require) and dist/easy-control.d.mts (import, which
 // also has the default export).
@@ -85,8 +85,9 @@ export interface Mouse {
     /** The pointer's picture; empty while it is hidden. */
     getIcon(): MouseIcon;
     /**
-     * A number that changes when the pointer's shape does; 0 while it is hidden on Windows and macOS
-     * (Linux cannot tell: XFixes reports no hidden state). Cheap on Windows and Linux (poll it, call
+     * A number that changes when the pointer's shape does; 0 while it is hidden on Windows and macOS,
+     * on macOS when its picture has nothing to see (CSS `cursor: none`); a pointer hidden any other way
+     * keeps its picture there (Linux cannot tell: XFixes reports no hidden state). Cheap on Windows and Linux (poll it, call
      * `getIcon` when it changes); a hash of the picture on macOS.
      */
     getIconId(): number;
