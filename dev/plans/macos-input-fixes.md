@@ -1,6 +1,6 @@
 # Plan: fixes from testing on a Mac
 
-Status: phase 1 done, on the Mac; phases 2 to 4 not started. Reviewed on 2026-11-06 (`/review-plan`, all four
+Status: phases 1 and 2 done, on the Mac; phases 3 and 4 not started. Reviewed on 2026-11-06 (`/review-plan`, all four
 sections). Covers the bugs found on 2026-11-05 by running the library on a real Mac for the first time
 (MacBook M1, one display, macOS 27.2, Xcode 27.2, Hungarian layout). Target release: 0.14.0.
 
@@ -63,6 +63,15 @@ Filled in as phases are done: what was verified where, what could not be verifie
 - Costs now, µs a call: `setPosition` 169, `moveBy` 143, `getPosition` 0.3, `getIcon` 182, `getIconId` 186.
 - Not verified: a second display (the rule is, in `test:native`); `buttonDown`'s new error (needs a window server giving
   no event). CI cannot run the pointer tests.
+
+2026-11-07, phase 2 done (6), on the same Mac; `dist/darwin-arm64` is a local build, not committed:
+
+- The new test first failed on the build before ("the press flips it"), then passed: a press and a second one, the
+  `VolumeMute` alias, `keyDown` then `releaseAll` flipping once, a press from a worker. The settings came back.
+- By hand, one press of each from volume 0 and muted: `AudioVolumeUp` gives 6 and unmuted, `AudioVolumeDown` 0 and muted.
+- Two mute presses gave a focused window no key events; a control key gave it its 2.
+- `npm test` 65 pass, 25 skipped (the volume test without its variable), `test:e2e` 20 pass, 1 skipped, `test:native`,
+  `test:types`. No build warnings in `keyboard.cpp`. The x64 build is left to CI.
 
 ## Items
 
@@ -216,7 +225,7 @@ Tests:
   `finally`. With the volume at 0 it is silent; the test sets 0 first and restores it after. It prints the original
   settings first, so that a test killed halfway can be undone by hand, and skips where the output has no software
   volume (`output muted:missing value`). Also: `keyDown` then `releaseAll` flips it once, and it works from a worker.
-- By hand: `AudioVolumeUp` and `AudioVolumeDown` move the volume. They are audible, so no test does.
+- By hand: `AudioVolumeUp` and `AudioVolumeDown` move the volume. They can be audible, so no test does.
 - Press only the mute key in any test: an earlier run pressed the `Volume*` aliases by accident, past a skip list
   written for `Audio*`.
 

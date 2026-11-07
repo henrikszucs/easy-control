@@ -463,6 +463,8 @@ What the operating systems do not let a program do, or do only in part.
   without an error.
 - **Secure keyboard entry**: while a password field (or an app, like Terminal with the option on) has it, keys are
   dropped; `Platform.getInputBlock()` says `"secure-input"`.
+- The volume keys (`AudioVolumeUp`, `AudioVolumeDown`, `AudioVolumeMute`) work the system's volume, as a keyboard's do;
+  no window sees them as keys. Each press changes it once: a held key does not repeat.
 - Mouse positions keep their fractions of a point. A position read within 100 ms of a move is that move's target,
   so a hand on the mouse goes unseen for that long; another process reading it sees the whole point until the move lands.
 - Gamepad rumble is not reported (the CoreHID gamepad has no rumble that games use).
@@ -483,6 +485,9 @@ npm run test:native   # C++ tests of code without system calls, test/native/ (th
 npm run test:e2e      # end-to-end tests in an Electron window, test/e2e/
 npm run test:driver   # Windows: uninstalls and reinstalls the gamepad driver, test/driver/
 ```
+
+On macOS, `test/unit/keyboard.test.js` presses the mute key and checks the system's setting; as that changes a setting
+of the machine until the test puts it back (at volume 0, so silently), it runs only with `EASYCONTROL_VOLUME_TEST=1`.
 
 On Linux, `test/unit/typing-x11.test.js` types into a window of its own with a Hungarian layout, to check characters
 that need AltGr; as it types for real, it runs only with `EASYCONTROL_TYPING_TEST=1` (CI sets it under Xvfb).

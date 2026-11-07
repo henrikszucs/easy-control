@@ -1,14 +1,18 @@
 "use strict";
 
 // Sends no key: a press would go to whatever window has the focus. The
-// end-to-end suite (test/e2e) presses keys into a window of its own.
+// end-to-end suite (test/e2e) presses keys into a window of its own. One
+// exception, only with EASYCONTROL_VOLUME_TEST=1: the mute key, which goes to
+// the system, and changes a setting of the machine until the test puts it back.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import os from "node:os";
+import path from "node:path";
+import { Worker } from "node:worker_threads";
 
-import { Keyboard, inputBlock, isWayland } from "./helpers.js";
+import { Keyboard, distPath, inputBlock, isWayland, skipNoInputAccess } from "./helpers.js";
 
 const commonKeys = [
     "KeyA", "KeyM", "KeyZ", "Digit0", "Digit5", "Digit9",
@@ -138,4 +142,86 @@ test("a key that failed to go down is not released later", function() {
     assert.throws(function() { Keyboard.keyDown("NotAKey"); }, { "message": "Key not supported" });
     // releaseAll would throw if it tried to release the unsupported key
     assert.equal(Keyboard.releaseAll(), undefined);
+});
+
+const volumeSettings = function() {
+    return execFileSync("osascript", ["-e", "get volume settings"], { "encoding": "utf8" }).trim();
+};
+
+const isMuted = function() {
+    return /output muted:true/.test(volumeSettings());
+};
+
+const waitForMuted = async function(expected, what) {
+    const end = Date.now() + 3000;
+    while (Date.now() < end) {
+        if (isMuted() === expected) {
+            return;
+        }
+        await new Promise(function(resolve) {
+            setTimeout(resolve, 50);
+        });
+    }
+    assert.equal(isMuted(), expected, what + ": " + volumeSettings());
+};
+
+test("macOS: the mute key mutes the system, a key press at a time", {
+    "skip": (os.platform() !== "darwin" && "macOS only") ||
+        (process.env["EASYCONTROL_VOLUME_TEST"] !== "1" && "changes a setting of the machine: only with EASYCONTROL_VOLUME_TEST=1") ||
+        skipNoInputAccess,
+    "timeout": 60000
+}, async function(t) {
+    const original = volumeSettings();
+    if (/output muted:missing value/.test(original)) {
+        t.skip("this output has no software volume");
+        return;
+    }
+    // to undo by hand, should this test be killed halfway
+    console.log("volume settings before the test: " + original);
+    const volume = Number(original.match(/output volume:(\d+)/)[1]);
+    const wasMuted = isMuted();
+    const setVolume = function(line) {
+        execFileSync("osascript", ["-e", "set volume " + line]);
+    };
+
+    // at volume 0, flipping the mute makes no sound
+    setVolume("output volume 0");
+    try {
+        const press = function(key) {
+            Keyboard.keyDown(key);
+            Keyboard.keyUp(key);
+        };
+
+        press("AudioVolumeMute");
+        await waitForMuted(!wasMuted, "the press flips it");
+        press("AudioVolumeMute");
+        await waitForMuted(wasMuted, "the second press flips it back");
+
+        press("VolumeMute");
+        await waitForMuted(!wasMuted, "the alias flips it");
+
+        // releaseAll releases the held key, and the press flips it once only
+        Keyboard.keyDown("AudioVolumeMute");
+        await waitForMuted(wasMuted, "a held key flips it on the press");
+        Keyboard.releaseAll();
+        await new Promise(function(resolve) {
+            setTimeout(resolve, 300);
+        });
+        assert.equal(isMuted(), wasMuted, "releaseAll did not flip it again");
+
+        // from a worker: the event is made off the main thread
+        const worker = new Worker("const { Keyboard } = require(" + JSON.stringify(path.join(distPath, "easy-control.cjs")) + ");" +
+            "Keyboard.keyDown('AudioVolumeMute'); Keyboard.keyUp('AudioVolumeMute');", { "eval": true });
+        await new Promise(function(resolve, reject) {
+            worker.on("error", reject);
+            worker.on("exit", resolve);
+        });
+        await waitForMuted(!wasMuted, "a press from a worker flips it");
+    } finally {
+        // muted first, so that going back up makes no sound
+        setVolume("output muted " + wasMuted);
+        setVolume("output volume " + volume);
+        setVolume("output muted " + wasMuted);
+        assert.equal(volumeSettings(), original, "the settings are back");
+    }
 });

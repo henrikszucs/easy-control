@@ -9,7 +9,10 @@
     #include <cwchar>
 #elif defined(IS_MACOS)
     #include <ApplicationServices/ApplicationServices.h>
+    #import <AppKit/AppKit.h>
     #include <Carbon/Carbon.h>
+    #include <IOKit/hidsystem/IOLLEvent.h>
+    #include <IOKit/hidsystem/ev_keymap.h>
     #include <CoreFoundation/CoreFoundation.h>
     #include <cctype>  // for tolower
 #elif defined(IS_LINUX)
@@ -590,10 +593,47 @@ static void UpdateModifierFlags() {
     ModifierFlags() = flags;
 }
 
+// The volume keys: as key events they reach the focused window and nothing
+// else. The system takes them as system-defined events, which no window sees.
+// The system's number for one of these keys, or -1.
+static int SystemKeyOf(CGKeyCode keycode) {
+    switch (keycode) {
+        case kVK_VolumeUp: return NX_KEYTYPE_SOUND_UP;
+        case kVK_VolumeDown: return NX_KEYTYPE_SOUND_DOWN;
+        case kVK_Mute: return NX_KEYTYPE_MUTE;
+        default: return -1;
+    }
+}
+
+static bool PostSystemKey(int systemKey, bool isDown) {
+    // workers have no autorelease pool of their own
+    @autoreleasepool {
+        const NSUInteger state = (NSUInteger)(isDown ? NX_KEYDOWN : NX_KEYUP) << 8;
+        NSEvent* event = [NSEvent otherEventWithType:NSEventTypeSystemDefined
+            location:NSZeroPoint
+            modifierFlags:(NSEventModifierFlags)state
+            timestamp:0
+            windowNumber:0
+            context:nil
+            subtype:NX_SUBTYPE_AUX_CONTROL_BUTTONS
+            data1:(NSInteger)(((NSUInteger)systemKey << 16) | state)
+            data2:-1];
+        if (event == nil || event.CGEvent == NULL) {
+            return false;
+        }
+        CGEventPost(kCGHIDEventTap, event.CGEvent);
+    }
+    return true;
+}
+
 // posts a key press or release; a modifier key goes as a flags-changed event
 // and is remembered, so later key and mouse events carry it
 static bool PostKey(CGKeyCode keycode, bool isDown) {
     InputStateLock lock;
+    const int systemKey = SystemKeyOf(keycode);
+    if (systemKey >= 0) {
+        return PostSystemKey(systemKey, isDown);
+    }
     const int modifier = ModifierIndex(keycode);
     if (modifier >= 0) {
         if (isDown) {
