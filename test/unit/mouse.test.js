@@ -9,7 +9,7 @@ import assert from "node:assert/strict";
 
 import os from "node:os";
 
-import { Mouse, Screen, inputBlock, pixelTolerance, skipNoInputAccess } from "./helpers.js";
+import { Mouse, Screen, inputBlock, isOnScreen, pixelTolerance, skipNoInputAccess } from "./helpers.js";
 
 // where the pointer was, to put it back; on the secure desktop it cannot be read
 const isPointerReadable = !(os.platform() === "win32" && inputBlock === "secure-desktop");
@@ -20,6 +20,18 @@ after(function() {
         Mouse.setPosition(startX, startY);
     }
 });
+
+// macOS keeps fractions of a point, and sends the pointer by posted events that land late
+const skipNoMacInput = (os.platform() !== "darwin" && "macOS only") || skipNoInputAccess;
+
+const sleep = function(ms) {
+    return new Promise(function(resolve) {
+        setTimeout(resolve, ms);
+    });
+};
+
+// past the moment a read still goes by the last move, so these are the system's own
+const MOVE_SETTLED = 150;
 
 const assertNear = function(actual, expected, tolerance, message) {
     assert.ok(Math.abs(actual - expected) <= tolerance, message + ": " + actual + " is not within " + tolerance + " of " + expected);
@@ -68,6 +80,94 @@ test("setPosition reaches points on every screen", { "skip": skipNoInputAccess }
             assertNear(Mouse.getX(), x, tolerance, "x on screen at " + s["x"] + "," + s["y"]);
             assertNear(Mouse.getY(), y, tolerance, "y on screen at " + s["x"] + "," + s["y"]);
         }
+    }
+});
+
+test("macOS: fractions of a point are kept, at once and after the posted move lands", { "skip": skipNoMacInput }, async function() {
+    const primary = Screen.list().find(function(s) {
+        return s["isPrimary"];
+    });
+    for (const fraction of [0.25, 0.5, 0.75, 0.3]) {
+        const x = primary["x"] + 300 + fraction;
+        const y = primary["y"] + 300 + (1 - fraction);
+        Mouse.setPosition(x, y);
+        assertNear(Mouse.getX(), x, 0.01, "x at once");
+        assertNear(Mouse.getY(), y, 0.01, "y at once");
+        await sleep(MOVE_SETTLED);
+        assertNear(Mouse.getX(), x, 0.01, "x after it landed");
+        assertNear(Mouse.getY(), y, 0.01, "y after it landed");
+    }
+});
+
+test("macOS: off every screen the pointer stays on one, at once and after the posted move lands", { "skip": skipNoMacInput }, async function() {
+    const screens = Screen.list();
+    const left = Math.min(...screens.map(function(s) { return s["x"]; })) - 500;
+    const top = Math.min(...screens.map(function(s) { return s["y"]; })) - 500;
+    const right = Math.max(...screens.map(function(s) { return s["x"] + s["width"]; })) + 500;
+    const bottom = Math.max(...screens.map(function(s) { return s["y"] + s["height"]; })) + 500;
+    const primary = screens.find(function(s) {
+        return s["isPrimary"];
+    });
+    const middleX = primary["x"] + primary["width"] / 2;
+    const middleY = primary["y"] + primary["height"] / 2;
+    for (const [x, y] of [[left, top], [right, top], [left, bottom], [right, bottom],
+        [left, middleY], [right, middleY], [middleX, top], [middleX, bottom]]) {
+        Mouse.setPosition(x, y);
+        const name = "sent to " + x + "," + y;
+        assert.ok(isOnScreen(screens, Mouse.getX(), Mouse.getY()), name + ": on a screen at once, at " + Mouse.getX() + "," + Mouse.getY());
+        await sleep(MOVE_SETTLED);
+        assert.ok(isOnScreen(screens, Mouse.getX(), Mouse.getY()), name + ": on a screen after it landed, at " + Mouse.getX() + "," + Mouse.getY());
+    }
+});
+
+test("macOS: off one side of the only screen, the other axis keeps its fraction", {
+    "skip": skipNoMacInput || (Screen.list().length !== 1 && "with several screens the nearest one may differ")
+}, function() {
+    const [screen] = Screen.list();
+    Mouse.setPosition(screen["x"] - 500, screen["y"] + 300.5);
+    assertNear(Mouse.getX(), screen["x"], 0.01, "x on the edge");
+    assertNear(Mouse.getY(), screen["y"] + 300.5, 0.01, "y as it was sent");
+});
+
+test("macOS: moveBy keeps a fraction, and past an edge stays on a screen", { "skip": skipNoMacInput }, async function() {
+    const screens = Screen.list();
+    const primary = screens.find(function(s) {
+        return s["isPrimary"];
+    });
+    const x = primary["x"] + 600.5;
+    const y = primary["y"] + 400.5;
+    Mouse.setPosition(x, y);
+    Mouse.moveBy(10, 0);
+    assertNear(Mouse.getX(), x + 10, 0.01, "there");
+    Mouse.moveBy(-10, 0);
+    assertNear(Mouse.getX(), x, 0.01, "and back");
+    assertNear(Mouse.getY(), y, 0.01, "the other axis");
+
+    for (const [dx, dy] of [[-100000, -100000], [100000, 100000]]) {
+        Mouse.moveBy(dx, dy);
+        assert.ok(isOnScreen(screens, Mouse.getX(), Mouse.getY()), "on a screen at once, at " + Mouse.getX() + "," + Mouse.getY());
+        await sleep(MOVE_SETTLED);
+        assert.ok(isOnScreen(screens, Mouse.getX(), Mouse.getY()), "on a screen after it landed, at " + Mouse.getX() + "," + Mouse.getY());
+    }
+});
+
+// The moves posted before land after the next warp. Reads and moves going by
+// what the system shows at that moment get an old position back: a design doing
+// that failed 927 of these reads, where running the whole suite failed 5 times in 12.
+test("macOS: a read straight after a move is that move, not one still on its way", { "skip": skipNoMacInput }, function() {
+    const primary = Screen.list().find(function(s) {
+        return s["isPrimary"];
+    });
+    const points = [[100, 100], [140, 140], [primary["width"] / 2, primary["height"] / 2], [10, 10],
+        [primary["width"] - 10, primary["height"] - 10]].map(function([x, y]) {
+        return [primary["x"] + x, primary["y"] + y];
+    });
+    const tolerance = pixelTolerance([primary]);
+    for (let i = 0; i < 4000; i++) {
+        const [x, y] = points[i % points.length];
+        Mouse.setPosition(x, y);
+        assertNear(Mouse.getX(), x, tolerance, "x of move " + i);
+        assertNear(Mouse.getY(), y, tolerance, "y of move " + i);
     }
 });
 

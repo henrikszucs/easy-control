@@ -283,21 +283,13 @@ static bool OpenPad(PadHandle& handle, std::string& message, std::string& code) 
 
     #elif defined(IS_MACOS)
         // it waits for the gamepad's activation, at most 5 s
-        NSMutableString* reason = [NSMutableString string];
-        handle.gamepadId = [GamepadBridge createGamepad:reason];
-        if (handle.gamepadId == -2) {
-            message = "The virtual gamepad was made, but activating it failed";
-            if (reason.length > 0) {
-                message += std::string(": ") + [reason UTF8String];
-            }
-            return false;
-        }
+        handle.gamepadId = [GamepadBridge createGamepad];
         if (handle.gamepadId == -3) {
             message = "The virtual gamepad was made, but its activation did not finish within 5 s";
             return false;
         }
         if (handle.gamepadId < 0) {
-            message = "Failed to create the virtual gamepad (needs macOS 26 and the com.apple.developer.hid.virtual.device entitlement)";
+            message = "Failed to create the virtual gamepad (needs macOS 15 and the com.apple.developer.hid.virtual.device entitlement)";
             return false;
         }
         return true;
@@ -843,13 +835,8 @@ void Gamepad::SetState(const Napi::CallbackInfo& info) {
         [GamepadBridge beginUpdate:padId];
         for (const ButtonChange& button : buttons) {
             if (button.index == 6 || button.index == 7) {
-                // the trigger's button bit, then the analog trigger
-                if (button.isPressed) {
-                    [GamepadBridge buttonDown:padId button:button.index];
-                } else {
-                    [GamepadBridge buttonUp:padId button:button.index];
-                }
-                [GamepadBridge setAxis:padId axis:button.index - 2 value:(int)((button.value * 2 - 1) * 32767.0)];
+                // its analog value and its pressed state, each as given
+                [GamepadBridge setTrigger:padId button:button.index value:(int)((button.value * 2 - 1) * 32767.0) pressed:button.isPressed];
             } else if (button.isPressed) {
                 [GamepadBridge buttonDown:padId button:button.index];
             } else {

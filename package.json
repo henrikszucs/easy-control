@@ -1,6 +1,6 @@
 {
     "name": "easy-control",
-    "version": "0.13.0",
+    "version": "0.14.0",
     "private": true,
     "description": "Simple and easy to use node.js module to simulate mouse, keyboard and controller input for Windows, MacOS and Linux.",
     "keywords": [
@@ -40,6 +40,8 @@
         "test": "node --test \"test/unit/*.test.js\"",
         "test:types": "tsc -p test/types",
         "test:native": "node test/native/run.js",
+        "test:gamepad-stub": "node test/gamepad-stub/run.js",
+        "test:mac": "node test/mac/run.js",
         "test:e2e": "node test/e2e/run.cjs",
         "test:driver": "node --test test/driver/driver.test.js",
         "clean": "node index.js --clean"

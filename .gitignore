@@ -4,6 +4,7 @@ build_swift/
 build_wdk/
 tmp/
 .vscode/
+.DS_Store
 
 # keys and certificates never go into git
 *.key

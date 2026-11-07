@@ -51,14 +51,14 @@ test("Gamepad.create rejects with an Error that says why", { "skip": !skipNoDriv
     assert.deepEqual(Gamepad.list(), [], "a failed create leaves nothing in the list");
 });
 
-test("macOS: create() says which of its three failures it met", { "skip": (os.platform() !== "darwin" && "macOS only") || (!skipNoDriver && "a virtual gamepad can be made here") }, async function() {
+test("macOS: create() says which of its two failures it met", { "skip": (os.platform() !== "darwin" && "macOS only") || (!skipNoDriver && "a virtual gamepad can be made here") }, async function() {
     await assert.rejects(Gamepad.create(), function(error) {
         assert.equal(error.code, "EASYCONTROL_CREATE_FAILED");
-        // before macOS 26 (Darwin 25) there is no HIDVirtualDevice to make
-        if (Number(os.release().split(".")[0]) < 25) {
-            assert.match(error.message, /macOS 26/);
+        // before macOS 15 (Darwin 24) there is no HIDVirtualDevice to make
+        if (Number(os.release().split(".")[0]) < 24) {
+            assert.match(error.message, /macOS 15/);
         } else {
-            assert.match(error.message, /macOS 26|activating it failed|activation did not finish/);
+            assert.match(error.message, /macOS 15|activation did not finish/);
         }
         return true;
     });

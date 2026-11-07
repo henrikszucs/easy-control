@@ -481,6 +481,66 @@ test("scroll takes fractions of a notch, which add up", async function() {
     assert(left.deltaX < 0, "negative x: deltaX " + left.deltaX + " should be negative (left)");
 });
 
+test("macOS: a click does not move the pointer off a fraction", { "skip": os.platform() !== "darwin" && "macOS only" }, async function() {
+    const point = centre(regions.pad);
+    const x = Math.floor(point.x) + 0.3;
+    const y = Math.floor(point.y) + 0.7;
+    let mark = events.length;
+    Mouse.setPosition(x, y);
+    await waitFor(mark, "the move", function(e) {
+        return e["type"] === "mousemove";
+    });
+    mark = events.length;
+    buttonDown("left");
+    buttonUp("left");
+    await waitFor(mark, "the release", function(e) {
+        return e["type"] === "mouseup";
+    });
+    await sleep(150);
+    assertNear(Mouse.getX(), x, 0.01, "x");
+    assertNear(Mouse.getY(), y, 0.01, "y");
+});
+
+test("macOS: a picture with nothing to see counts as hidden, one with a pixel to see does not", { "skip": os.platform() !== "darwin" && "macOS only" }, async function() {
+    const point = centre(regions.pad);
+    const shapeOf = async function(cursor) {
+        await call("document.getElementById(\"pad\").style.cursor = " + JSON.stringify(cursor));
+        // the shape changes once the window has seen a move
+        const mark = events.length;
+        Mouse.setPosition(point.x + 5, point.y + 5);
+        await waitFor(mark, "the move away", function(e) {
+            return e["type"] === "mousemove";
+        });
+        const markBack = events.length;
+        Mouse.setPosition(point.x, point.y);
+        await waitFor(markBack, "the move back", function(e) {
+            return e["type"] === "mousemove";
+        });
+        await sleep(150);
+        return { "id": Mouse.getIconId(), "icon": Mouse.getIcon() };
+    };
+    const onePixel = "url(\"data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='8' height='8'>" +
+        "<rect width='1' height='1' fill='red'/></svg>\") 0 0, auto";
+    try {
+        const before = await shapeOf("default");
+        assert(before.icon.width > 0 && before.id !== 0, "the arrow has a picture and an id");
+
+        const hidden = await shapeOf("none");
+        assert(hidden.icon.width === 0 && hidden.icon.height === 0 && hidden.icon.data.length === 0,
+            "cursor: none gives a " + hidden.icon.width + "x" + hidden.icon.height + " picture of " + hidden.icon.data.length + " bytes");
+        assert(hidden.id === 0, "cursor: none gives id " + hidden.id);
+
+        const pixel = await shapeOf(onePixel);
+        assert(pixel.icon.width > 0 && pixel.id !== 0,
+            "one pixel to see gives a " + pixel.icon.width + "x" + pixel.icon.height + " picture and id " + pixel.id);
+
+        const after = await shapeOf("default");
+        assert(after.id === before.id, "the arrow's id came back as " + after.id + ", it was " + before.id);
+    } finally {
+        await call("document.getElementById(\"pad\").style.cursor = \"\"");
+    }
+});
+
 test("getIcon and getIconId follow the pointer shape", { "skip": isWayland && "Wayland shows only XWayland pointer shapes" }, async function() {
     const arrowPoint = centre(regions.pad);
     const crossPoint = centre(regions.cross);
@@ -771,7 +831,12 @@ test("a virtual gamepad shows up in navigator.getGamepads with every button and 
     try {
         const index = await findPad(before, gamepad);
         const pad = await readPad(index);
-        assert(pad["mapping"] === "standard", "mapping is \"" + pad["mapping"] + "\", not the standard layout (" + pad["id"] + ")");
+        // macOS: a generic HID gamepad, for which a browser knows no mapping. In
+        // the same order, but the analog triggers are axes 4 and 5, and a
+        // button's value is 0 or 1. Not seen working: it takes an entitlement.
+        const isMac = os.platform() === "darwin";
+        const expectedMapping = isMac ? "" : "standard";
+        assert(pad["mapping"] === expectedMapping, "mapping is \"" + pad["mapping"] + "\", not \"" + expectedMapping + "\" (" + pad["id"] + ")");
 
         // buttons 6 and 7 are the triggers, driven by axes 4 and 5 below
         for (let btn = 0; btn < 17; btn++) {
@@ -803,7 +868,9 @@ test("a virtual gamepad shows up in navigator.getGamepads with every button and 
                 gamepad.setAxis(axis, value);
                 const expected = (value + 1) / 2;
                 await waitForPad(index, "trigger axis " + axis + " at " + value, function(p) {
-                    return Math.abs(p.buttons[btn].value - expected) <= 0.1;
+                    return isMac
+                        ? Math.abs(p.axes[axis] - value) <= 0.1 && p.buttons[btn].pressed === (value >= 0)
+                        : Math.abs(p.buttons[btn].value - expected) <= 0.1;
                 });
             }
         }
@@ -811,12 +878,14 @@ test("a virtual gamepad shows up in navigator.getGamepads with every button and 
         // setState: buttons, an analog trigger and axes in one call
         gamepad.setState({ "buttons": [true, false, true, false, false, false, { "pressed": true, "value": 0.5 }], "axes": [0.5, -0.5] });
         await waitForPad(index, "setState's buttons, trigger and axes", function(p) {
+            const isTriggerRight = isMac ? p.buttons[6].pressed && Math.abs(p.axes[4]) <= 0.1 : Math.abs(p.buttons[6].value - 0.5) <= 0.1;
             return p.buttons[0].pressed && !p.buttons[1].pressed && p.buttons[2].pressed &&
-                Math.abs(p.buttons[6].value - 0.5) <= 0.1 && Math.abs(p.axes[0] - 0.5) <= 0.1 && Math.abs(p.axes[1] + 0.5) <= 0.1;
+                isTriggerRight && Math.abs(p.axes[0] - 0.5) <= 0.1 && Math.abs(p.axes[1] + 0.5) <= 0.1;
         });
         gamepad.setState({ "buttons": [false, false, false, false, false, false, 0], "axes": [0, 0] });
         await waitForPad(index, "setState's release", function(p) {
-            return !p.buttons[0].pressed && !p.buttons[2].pressed && p.buttons[6].value <= 0.1 && Math.abs(p.axes[0]) <= 0.1;
+            const isTriggerReleased = isMac ? !p.buttons[6].pressed && p.axes[4] <= -0.9 : p.buttons[6].value <= 0.1;
+            return !p.buttons[0].pressed && !p.buttons[2].pressed && isTriggerReleased && Math.abs(p.axes[0]) <= 0.1;
         });
 
         // rumble: Chromium plays it on the pad as a game would
